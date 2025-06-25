@@ -152,13 +152,14 @@ The Multi-GPU Collector node integrates seamlessly with existing ComfyUI workflo
 
 This project is under active development. Contributions are welcome!
 
-### Planned Features
+### Planned Features/Improvements
 
-- Linux/Mac launcher scripts
-- Automatic GPU detection and configuration
-- Load balancing based on GPU capabilities
 - Support for remote workers over network
-- Queue management improvements
+- Better VRAM management for multi-GPU setups
+- Better Seed handling
+- Better Batch handling
+- Handle worker failure
+- Compatibility with FLUX Continuum `CTRL+SHIFT+C` shortcut
 
 ## License
 
