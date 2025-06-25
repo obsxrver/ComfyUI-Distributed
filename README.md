@@ -52,17 +52,22 @@ For example, with 4 GPUs and a batch size of 2, you'll generate 8 images in para
 
 1. Copy the `launch_distributed.bat` file to your ComfyUI root directory (alongside other .bat files like `run_nvidia_gpu.bat`)
 
-2. Run the launcher script from the ComfyUI root directory:
+2. Edit the `gpu_config.json` file in `ComfyUI/custom_nodes/ComfyUI-Distributed/` to match your GPU setup:
+   - Adjust the number of workers based on your available GPUs
+   - Update CUDA device numbers if needed
+   - Set appropriate ports (ensure they're not in use)
+
+3. Run the launcher script from the ComfyUI root directory:
    ```bash
    launch_distributed.bat
    ```
    This will automatically start ComfyUI instances for each GPU
 
-3. Open the master instance (usually http://localhost:8188)
+4. Open the master instance (usually http://localhost:8188)
 
-4. Add the "Multi-GPU Collector" node to your workflow
+5. Add the "Multi-GPU Collector" node to your workflow
 
-5. Use the GPU control panel in the sidebar to:
+6. Use the GPU control panel in the sidebar to:
    - Select which GPUs to use
    - Choose between parallel or staggered execution
    - Clear VRAM when needed
@@ -125,6 +130,11 @@ The Multi-GPU Collector node integrates seamlessly with existing ComfyUI workflo
 3. All GPUs will process their assigned batches
 4. Results are collected and passed to the next node as a single batch
 
+### Important Node Requirements
+
+- **Batch Node**: Your workflow must include a node with the title "BATCH" or "BATCH SIZE" (case-insensitive). This is required for the Multi-GPU system to detect the batch size for distribution.
+- The system will show an error if no batch node with the correct title is found.
+
 ## Performance Considerations
 
 - **Parallel Mode**: Best for workflows with consistent VRAM usage
@@ -141,12 +151,6 @@ The Multi-GPU Collector node integrates seamlessly with existing ComfyUI workflo
 ## Development
 
 This project is under active development. Contributions are welcome!
-
-### Known Issues
-
-- Windows Terminal required for the launcher script
-- Manual configuration needed for more than 4 GPUs
-- Some custom nodes may not be compatible with distributed processing
 
 ### Planned Features
 
