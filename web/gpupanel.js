@@ -5,8 +5,6 @@ class MultiGPUExtension {
     // Button styling constants
     static BUTTON_STYLES = {
         base: "width: 100%; padding: 8px; font-size: 12px; color: white; border: none; border-radius: 4px; cursor: pointer; transition: background-color 0.2s;",
-        clearMemory: "background-color: #555;",
-        stagger: "background-color: #224422; margin-top: 8px;",
         success: "background-color: #3ca03c;",
         error: "background-color: #c04c4c;"
     };
@@ -14,7 +12,6 @@ class MultiGPUExtension {
     constructor() {
         this.config = null;
         this.originalQueuePrompt = api.queuePrompt.bind(api);
-        this.isStaggeredRun = false;
 
         // --- FIX [1 of 7]: Constructor Race Condition ---
         // The interceptor is now set up *after* the config is guaranteed to be loaded.
@@ -100,41 +97,6 @@ class MultiGPUExtension {
         return button;
     }
 
-    async _handleClearMemory(button) {
-        const originalText = button.textContent;
-        button.textContent = "Clearing...";
-        button.disabled = true;
-        
-        try {
-            const urlsToClear = [{ name: 'Master', url: window.location.origin }, ...this.enabledWorkers.map(w => ({ name: w.name, url: `http://localhost:${w.port}` }))];
-            
-            const promises = urlsToClear.map(target =>
-                fetch(`${target.url}/multigpu/clear_memory`, { method: 'POST', mode: 'cors' })
-                    .then(response => ({ ok: response.ok, name: target.name }))
-                    .catch(() => ({ ok: false, name: target.name }))
-            );
-            
-            const results = await Promise.all(promises);
-            const failures = results.filter(r => !r.ok);
-            
-            if (failures.length === 0) {
-                button.textContent = "Success!";
-                button.style.backgroundColor = MultiGPUExtension.BUTTON_STYLES.success.split(':')[1].trim().replace(';', '');
-            } else {
-                button.textContent = "Error! See Console";
-                button.style.backgroundColor = MultiGPUExtension.BUTTON_STYLES.error.split(':')[1].trim().replace(';', '');
-            }
-            
-            setTimeout(() => {
-                button.textContent = originalText;
-                button.style.cssText = MultiGPUExtension.BUTTON_STYLES.base + MultiGPUExtension.BUTTON_STYLES.clearMemory;
-            }, 3000);
-        } finally {
-            // --- FIX [2 of 7]: Button State ---
-            // Ensure the button is re-enabled even if an error occurs.
-            button.disabled = false;
-        }
-    }
 
     renderSidebarContent(el) {
         el.innerHTML = '';
@@ -178,57 +140,6 @@ class MultiGPUExtension {
         gpuSection.appendChild(gpuList);
         container.appendChild(gpuSection);
         
-        const actionsSection = document.createElement("div");
-        actionsSection.style.cssText = "padding-top: 10px; margin-bottom: 15px; border-top: 1px solid #444;";
-        
-        const clearMemButton = this._createButton("Clear VRAM", (e) => this._handleClearMemory(e.target), MultiGPUExtension.BUTTON_STYLES.clearMemory);
-        actionsSection.appendChild(clearMemButton);
-
-        const staggerButton = this._createButton("Staggered Start", (e) => {
-            // --- FIX [3 of 7]: Button State & Race Condition ---
-            const button = e.target;
-            button.disabled = true;
-            try {
-                this.isStaggeredRun = true;
-                app.queuePrompt(0, 1);
-            } finally {
-                // Re-enable the button after a short delay to allow the prompt to be processed.
-                setTimeout(() => { button.disabled = false; }, 1000);
-            }
-        }, MultiGPUExtension.BUTTON_STYLES.stagger);
-        staggerButton.id = "stagger-queue-button";
-        staggerButton.title = "Run on Master immediately, then on each Worker with a delay.";
-        actionsSection.appendChild(staggerButton);
-        
-        const settingsSection = document.createElement("div");
-        settingsSection.style.cssText = "margin-top: 10px;";
-
-        const delayDiv = document.createElement("div");
-        delayDiv.style.cssText = "display: flex; align-items: center; justify-content: space-between;";
-        const delayLabel = document.createElement("label");
-        delayLabel.textContent = "Stagger Delay (s)";
-        delayLabel.htmlFor = "stagger-delay-input";
-        delayLabel.style.cssText = "font-size: 12px; color: #888;";
-        const delayInput = document.createElement("input");
-        delayInput.id = "stagger-delay-input";
-        delayInput.type = "number";
-        delayInput.min = "0";
-        delayInput.step = "0.1";
-        delayInput.style.cssText = "width: 60px; background-color: #222; border: 1px solid #444; border-radius: 4px; padding: 4px; color: white; font-size: 12px;";
-        delayInput.value = (this.config?.settings?.stagger_delay_ms || 15000) / 1000;
-        delayInput.onchange = async (e) => {
-            const valueInSeconds = parseFloat(e.target.value);
-            if(isNaN(valueInSeconds) || valueInSeconds < 0) return;
-            const valueInMs = Math.round(valueInSeconds * 1000);
-            this.config.settings.stagger_delay_ms = valueInMs;
-            await this._updateSetting('stagger_delay_ms', valueInMs);
-        };
-        delayDiv.appendChild(delayLabel);
-        delayDiv.appendChild(delayInput);
-        settingsSection.appendChild(delayDiv);
-        actionsSection.appendChild(settingsSection);
-        
-        container.appendChild(actionsSection);
 
         const summarySection = document.createElement("div");
         summarySection.style.cssText = "border-top: 1px solid #444; padding-top: 10px;";
@@ -257,19 +168,9 @@ class MultiGPUExtension {
 
     setupInterceptor() {
         api.queuePrompt = async (number, prompt) => {
-            // --- FIX [4 of 7]: isStaggeredRun Race Condition ---
-            // The check for the flag is now safer. It's read and reset in a way that
-            // prevents the race condition caused by the original 'finally' block.
             if (this.isEnabled && this.findNodesByClass(prompt.output, "MultiGPUCollector").length > 0) {
-                const handleStaggered = this.isStaggeredRun;
-                this.isStaggeredRun = false; // Consume the flag immediately
-
-                console.log(`[MultiGPU] Intercepting prompt. Staggered mode: ${handleStaggered}`);
-                if (handleStaggered) {
-                    return await this.executeStaggeredMultiGPU(prompt);
-                } else {
-                    return await this.executeParallelMultiGPU(prompt);
-                }
+                console.log("[MultiGPU] Intercepting prompt. Executing parallel Multi-GPU.");
+                return await this.executeParallelMultiGPU(prompt);
             }
             return this.originalQueuePrompt(number, prompt);
         };
@@ -307,54 +208,6 @@ class MultiGPUExtension {
         }
     }
 
-    async executeStaggeredMultiGPU(promptWrapper) {
-        try {
-            console.log("[MultiGPU] Staggered Start activated.");
-            const multi_job_id = "mgpu_" + Date.now();
-            const enabledWorkers = this.enabledWorkers;
-            const batchSize = this._getBatchSizeFromPrompt(promptWrapper);
-            await this._prepareMultiGpuJob(multi_job_id);
-
-            // --- FIX [5 of 7]: Synchronization ---
-            // Calculate a dynamic timeout for the master node.
-            // Baseline of 300s + stagger delay for each worker.
-            const staggerDelay = this.config.settings?.stagger_delay_ms || 15000;
-            const requiredTimeout = ((enabledWorkers.length * staggerDelay) / 1000) + 300;
-            console.log(`[MultiGPU] Master collector timeout set to ${requiredTimeout}s to accommodate staggered workers.`);
-
-            const masterPrompt = this._prepareApiPromptForParticipant(
-                promptWrapper.output, multi_job_id, 'master',
-                { 
-                    enabled_worker_ids: enabledWorkers.map(w => w.id), 
-                    worker_batch_size: batchSize,
-                    stagger_timeout: requiredTimeout // Pass the new timeout to the master
-                }
-            );
-            this.originalQueuePrompt(0, { ...promptWrapper, output: masterPrompt });
-            console.log("[MultiGPU] Dispatched to Master immediately.");
-
-            console.log(`[MultiGPU] Beginning staggered dispatch to workers with a ${staggerDelay / 1000}s delay.`);
-
-            for (const worker of enabledWorkers) {
-                await new Promise(resolve => setTimeout(resolve, staggerDelay));
-                // --- FIX [6 of 7]: Missing Parameters ---
-                // The options object was missing here, which prevented the 'master_url'
-                // from being set correctly for the worker.
-                const workerPrompt = this._prepareApiPromptForParticipant(
-                    promptWrapper.output, 
-                    multi_job_id, 
-                    worker.id,
-                    { enabled_worker_ids: [], worker_batch_size: 0 } // This ensures master_url is set
-                );
-                await this._dispatchToWorker(worker, workerPrompt, promptWrapper.workflow);
-            }
-            return { "prompt_id": "multi-gpu-staggered-job-dispatched" };
-        } catch (error) {
-            console.error("[MultiGPU] Staggered execution failed:", error);
-            alert(`[MultiGPU] Staggered execution failed: ${error.message}`);
-            throw error;
-        }
-    }
 
     async _executeJobs(jobs) {
         const promises = jobs.map(job => 
@@ -399,10 +252,6 @@ class MultiGPUExtension {
             if (isMaster) {
                 inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
                 inputs.worker_batch_size = options.worker_batch_size || 1;
-                // Pass the dynamic timeout for staggered mode
-                if (options.stagger_timeout) {
-                    inputs.stagger_timeout = options.stagger_timeout;
-                }
             } else {
                 inputs.master_url = window.location.origin;
             }
