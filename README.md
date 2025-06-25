@@ -163,7 +163,7 @@ This project is under active development. Contributions are welcome!
 ### Planned Features/Improvements
 
 - Support for remote workers over network
-- Better VRAM management for multi-GPU setups
+- ~Better VRAM management for multi-GPU setups~
 - Better Seed handling
 - Better Batch handling
 - Handle worker failure
