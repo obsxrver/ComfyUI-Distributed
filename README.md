@@ -15,11 +15,9 @@ ComfyUI-Distributed extends ComfyUI with the ability to distribute batch process
 - **Multi-GPU Distributed Processing**: Leverage all available GPUs simultaneously
 - **Master-Worker Architecture**: Automatic coordination between GPU instances
 - **Dynamic Worker Management**: Enable/disable GPUs on-the-fly through the UI
-- **Execution Modes**:
-  - **Parallel Mode**: All GPUs process simultaneously for maximum speed
-  - **Staggered Mode**: Sequential GPU startup with configurable delays to manage VRAM usage
-- **VRAM Management**: Built-in tools to clear GPU memory across all instances
+- **Parallel Execution**: All enabled GPUs process batches simultaneously for maximum speed
 - **Web UI Integration**: Seamless control panel integrated into ComfyUI's interface
+- **Smart Launch**: Launcher checks for running instances and starts only those that aren't running
 
 ## How It Works
 
@@ -58,21 +56,20 @@ For example, with 4 GPUs and a batch size of 2, you'll generate 8 images in para
    - Adjust the number of workers based on your available GPUs
    - Update CUDA device numbers if needed
    - Set appropriate ports (ensure they're not in use)
+   - Add custom launch arguments in `extra_args` for master and workers
 
 3. Run the launcher script from the ComfyUI root directory:
    ```bash
    launch_distributed.bat
    ```
-   This will automatically start ComfyUI instances for each GPU
 
 4. Open the master instance (usually http://localhost:8188)
 
 5. Add the "Multi-GPU Collector" node to your workflow
 
 6. Use the GPU control panel in the sidebar to:
-   - Select which GPUs to use
-   - Choose between parallel or staggered execution
-   - Clear VRAM when needed
+   - View GPU status and worker information
+   - Monitor active instances
 
 ### Manual Setup (All Platforms)
 
@@ -98,30 +95,38 @@ The system uses a `gpu_config.json` file for configuration. Default configuratio
 ```json
 {
   "master": {
-    "port": 8188,
-    "device": 0,
-    "enabled": true
+    "port": 8480,
+    "cuda_device": 0,
+    "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
   },
   "workers": [
     {
-      "port": 8189,
-      "device": 1,
+      "id": 1,
+      "name": "GPU 1",
+      "cuda_device": 1,
+      "port": 8180,
       "enabled": true,
-      "extra_args": "--enable-cors-header"
+      "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
     },
     {
-      "port": 8190,
-      "device": 2,
+      "id": 2,
+      "name": "GPU 2",
+      "cuda_device": 2,
+      "port": 8280,
       "enabled": true,
-      "extra_args": "--enable-cors-header"
+      "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
     }
   ],
   "settings": {
-    "stagger_delay": 2.0,
-    "job_timeout": 120
+    "retry_delay_ms": 500
   }
 }
 ```
+
+**Configuration Options:**
+- `extra_args`: Custom launch arguments for each instance (e.g., memory management flags)
+- `retry_delay_ms`: Delay between connection attempts during startup
+- Worker `enabled` flag: Control which GPUs are active
 
 ## Workflow Integration
 
@@ -139,16 +144,17 @@ The Multi-GPU Collector node integrates seamlessly with existing ComfyUI workflo
 
 ## Performance Considerations
 
-- **Parallel Mode**: Best for workflows with consistent VRAM usage
-- **Staggered Mode**: Ideal for memory-intensive workflows or when GPUs have different VRAM capacities
+- **Parallel Execution**: All enabled GPUs process simultaneously for maximum throughput
 - **Batch Size**: Total generation = batch_size × number_of_active_GPUs
+- **Smart Launching**: The launcher only starts instances that aren't already running
+- **Memory Management**: Use appropriate `extra_args` in configuration for memory optimization
 
 ## Troubleshooting
 
 - **Workers not connecting**: Ensure CORS headers are enabled (`--enable-cors-header`)
-- **VRAM errors**: Use staggered mode with appropriate delays
-- **Timeout errors**: Increase `job_timeout` in configuration
+- **VRAM errors**: Add memory management flags in `extra_args` (e.g., `--highvram`, `--disable-smart-memory`)
 - **Port conflicts**: Ensure each instance uses a unique port
+- **Partial startup**: The launcher will automatically start only missing instances without affecting running ones
 
 ## Development
 
