@@ -163,6 +163,8 @@ This project is under active development. Contributions are welcome!
 ### Planned Features/Improvements
 
 - Support for remote workers over network
+   - Worker status (read/in progress/offline)
+   - Restart worker button
 - ~Better VRAM management for multi-GPU setups~
 - Better Seed handling
 - Better Batch handling
