@@ -1,7 +1,8 @@
 {
   "master": {
     "port": 8480,
-    "cuda_device": 0
+    "cuda_device": 0,
+    "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
   },
   "workers": [
     {
@@ -9,27 +10,25 @@
       "name": "GPU 1",
       "cuda_device": 1,
       "port": 8180,
-      "enabled": false,
-      "extra_args": ""
+      "enabled": true,
+      "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
     },
     {
       "id": 2,
       "name": "GPU 2",
       "cuda_device": 2,
       "port": 8280,
-      "enabled": false,
-      "extra_args": ""
+      "enabled": true,
+      "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
     },
     {
       "id": 3,
       "name": "GPU 3",
       "cuda_device": 3,
       "port": 8380,
-      "enabled": false,
-      "extra_args": ""
+      "enabled": true,
+      "extra_args": "--mmap-torch-files --highvram --disable-smart-memory --reserve-vram 2"
     }
   ],
-  "settings": {
-    "stagger_delay_ms": 15000
-  }
+  "settings": {}
 }
