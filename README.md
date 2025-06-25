@@ -4,6 +4,8 @@
 
 A custom node extension for ComfyUI that enables distributed image generation across multiple GPUs through a master-worker architecture.
 
+![image](https://github.com/user-attachments/assets/1e95e9e6-5237-4b24-8500-ac3b2703a1ea)
+
 ## Overview
 
 ComfyUI-Distributed extends ComfyUI with the ability to distribute batch processing across multiple GPUs, allowing for linear scaling of image generation performance. It achieves this by coordinating multiple ComfyUI instances, each running on a different GPU, with one instance acting as the master coordinator.
