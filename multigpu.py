@@ -10,8 +10,6 @@ from aiohttp import web
 import io
 import server
 from concurrent.futures import Future
-import comfy.model_management as mm
-import gc
 
 # --- Config Management ---
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "gpu_config.json")
@@ -21,9 +19,7 @@ def get_default_config():
     return {
         "master": {"port": 8188, "cuda_device": 0},
         "workers": [],
-        "settings": {
-            "stagger_delay_ms": 15000
-        }
+        "settings": {}
     }
 
 def load_config():
@@ -138,17 +134,6 @@ async def prepare_job_endpoint(request):
     except Exception as e:
         return await handle_api_error(request, e)
 
-@server.PromptServer.instance.routes.post("/multigpu/clear_memory")
-async def clear_memory_endpoint(request):
-    print("[MultiGPU] Received request to clear VRAM.")
-    try:
-        gc.collect()
-        mm.unload_all_models()
-        mm.soft_empty_cache()
-        print("[MultiGPU] VRAM cleared successfully.")
-        return web.json_response({"status": "success", "message": "GPU memory cleared."})
-    except Exception as e:
-        return await handle_api_error(request, f"Error clearing VRAM: {e}")
 
 # --- Global State & Callback Endpoint ---
 PENDING_JOBS = {}
@@ -194,8 +179,6 @@ class MultiGPUCollectorNode:
                 # --- FIX [7 of 7]: Type Mismatch ---
                 # Changed from FLOAT to INT for type safety and clarity.
                 "worker_batch_size": ("INT", {"default": 1, "min": 1, "max": 1024}),
-                # Added a dynamic timeout for staggered mode
-                "stagger_timeout": ("FLOAT", {"default": 300.0, "min": 0.0}),
             },
         }
 
@@ -203,7 +186,7 @@ class MultiGPUCollectorNode:
     FUNCTION = "run"
     CATEGORY = "image"
     
-    def run(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, stagger_timeout=300.0):
+    def run(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1):
         if not multi_job_id:
             return (images,)
 
@@ -212,7 +195,7 @@ class MultiGPUCollectorNode:
 
         async def run_and_set_future():
             try:
-                result = await self.execute(images, multi_job_id, is_worker, master_url, enabled_worker_ids, worker_batch_size, stagger_timeout)
+                result = await self.execute(images, multi_job_id, is_worker, master_url, enabled_worker_ids, worker_batch_size)
                 future.set_result(result)
             except Exception as e:
                 future.set_exception(e)
@@ -239,7 +222,7 @@ class MultiGPUCollectorNode:
         except Exception as e:
             print(f"[MultiGPU Worker] Failed to send image {image_index+1} to master: {e}")
 
-    async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, stagger_timeout=300.0):
+    async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1):
         if is_worker:
             # Worker mode: send images to master
             print(f"[MultiGPU Worker] Job {multi_job_id} complete. Sending {images.shape[0]} image(s) to master at {master_url}")
@@ -267,7 +250,7 @@ class MultiGPUCollectorNode:
             try:
                 # Collect all images with a potentially dynamic timeout
                 for i in range(total_images_to_collect):
-                    worker_tensor = await asyncio.wait_for(q.get(), timeout=stagger_timeout)
+                    worker_tensor = await asyncio.wait_for(q.get(), timeout=300.0)
                     all_tensors.append(worker_tensor)
                     print(f"[MultiGPU Master] Collected image {i+1}/{total_images_to_collect}")
             except asyncio.TimeoutError:
