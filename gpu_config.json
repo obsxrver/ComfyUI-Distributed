@@ -1,0 +1,35 @@
+{
+  "master": {
+    "port": 8480,
+    "cuda_device": 0
+  },
+  "workers": [
+    {
+      "id": 1,
+      "name": "GPU 1",
+      "cuda_device": 1,
+      "port": 8180,
+      "enabled": false,
+      "extra_args": ""
+    },
+    {
+      "id": 2,
+      "name": "GPU 2",
+      "cuda_device": 2,
+      "port": 8280,
+      "enabled": false,
+      "extra_args": ""
+    },
+    {
+      "id": 3,
+      "name": "GPU 3",
+      "cuda_device": 3,
+      "port": 8380,
+      "enabled": false,
+      "extra_args": ""
+    }
+  ],
+  "settings": {
+    "stagger_delay_ms": 15000
+  }
+}
