@@ -165,9 +165,12 @@ This project is under active development. Contributions are welcome!
 - Support for remote workers over network
    - Worker status (read/in progress/offline)
    - Restart worker button
+   - Cold start workers from UI
 - ~Better VRAM management for multi-GPU setups~
 - Better Seed handling
 - Better Batch handling
+   - Batch Size Override
+      - UI control to dynamically adjust batch size per generation
 - Handle worker failure
 - Compatibility with FLUX Continuum `CTRL+SHIFT+C` shortcut
 
