@@ -192,7 +192,7 @@ The extension provides several REST API endpoints for integration:
 
 ## Development
 
-This project is stable and ready for use. Contributions are welcome!
+This project is under active development. Contributions are welcome!
 
 ### Planned Features/Improvements
 
