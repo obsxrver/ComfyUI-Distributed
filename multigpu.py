@@ -134,6 +134,51 @@ async def prepare_job_endpoint(request):
     except Exception as e:
         return await handle_api_error(request, e)
 
+@server.PromptServer.instance.routes.post("/multigpu/clear_memory")
+async def clear_memory_endpoint(request):
+    print("[MultiGPU] Received request to clear VRAM.")
+    try:
+        # Use ComfyUI's prompt server queue system like the /free endpoint does
+        if hasattr(server.PromptServer.instance, 'prompt_queue'):
+            server.PromptServer.instance.prompt_queue.set_flag("unload_models", True)
+            server.PromptServer.instance.prompt_queue.set_flag("free_memory", True)
+            print("[MultiGPU] Set queue flags for memory clearing.")
+        
+        # Wait a bit for the queue to process
+        await asyncio.sleep(0.5)
+        
+        # Also do direct cleanup as backup, but with error handling
+        import gc
+        import comfy.model_management as mm
+        
+        try:
+            mm.unload_all_models()
+        except AttributeError as e:
+            print(f"[MultiGPU] Warning during model unload: {e}")
+        
+        try:
+            mm.soft_empty_cache()
+        except Exception as e:
+            print(f"[MultiGPU] Warning during cache clear: {e}")
+        
+        for _ in range(3):
+            gc.collect()
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        
+        print("[MultiGPU] VRAM cleared successfully.")
+        return web.json_response({"status": "success", "message": "GPU memory cleared."})
+    except Exception as e:
+        # Even if there's an error, try to do basic cleanup
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(f"[MultiGPU] Partial VRAM clear completed with warning: {e}")
+        return web.json_response({"status": "success", "message": "GPU memory cleared (with warnings)"})
+
 
 # --- Global State & Callback Endpoint ---
 PENDING_JOBS = {}
