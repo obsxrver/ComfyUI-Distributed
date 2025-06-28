@@ -196,8 +196,8 @@ This project is stable and ready for use. Contributions are welcome!
 
 ### Planned Features/Improvements
 
-- Custom launcher
-   - Launch local workers
+- ~Custom launcher~
+   - ~Launch local workers~
    - Launch remote workers (via SSH)
 - ~Support for remote workers over network~  
    - Worker status (ready/in progress/offline)
