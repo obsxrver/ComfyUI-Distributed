@@ -5,6 +5,7 @@ class MultiGPUExtension {
     // Button styling constants
     static BUTTON_STYLES = {
         base: "width: 100%; padding: 8px; font-size: 12px; color: white; border: none; border-radius: 4px; cursor: pointer; transition: background-color 0.2s;",
+        clearMemory: "background-color: #555;",
         success: "background-color: #3ca03c;",
         error: "background-color: #c04c4c;"
     };
@@ -97,6 +98,57 @@ class MultiGPUExtension {
         return button;
     }
 
+    async _handleClearMemory(button) {
+        const originalText = button.textContent;
+        button.textContent = "Clearing...";
+        button.disabled = true;
+        
+        try {
+            const urlsToClear = this.enabledWorkers.map(w => ({ 
+                name: w.name, 
+                url: `http://${w.host || window.location.hostname}:${w.port}` 
+            }));
+            
+            if (urlsToClear.length === 0) {
+                button.textContent = "No Workers";
+                button.style.backgroundColor = MultiGPUExtension.BUTTON_STYLES.error.split(':')[1].trim().replace(';', '');
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.style.cssText = MultiGPUExtension.BUTTON_STYLES.base + MultiGPUExtension.BUTTON_STYLES.clearMemory;
+                }, 3000);
+                return;
+            }
+            
+            const promises = urlsToClear.map(target =>
+                fetch(`${target.url}/multigpu/clear_memory`, { 
+                    method: 'POST', 
+                    mode: 'cors'
+                })
+                    .then(response => ({ ok: response.ok, name: target.name }))
+                    .catch(() => ({ ok: false, name: target.name }))
+            );
+            
+            const results = await Promise.all(promises);
+            const failures = results.filter(r => !r.ok);
+            
+            if (failures.length === 0) {
+                button.textContent = "Success!";
+                button.style.backgroundColor = MultiGPUExtension.BUTTON_STYLES.success.split(':')[1].trim().replace(';', '');
+            } else {
+                button.textContent = "Error! See Console";
+                button.style.backgroundColor = MultiGPUExtension.BUTTON_STYLES.error.split(':')[1].trim().replace(';', '');
+                console.error("[MultiGPU] Failed to clear memory on:", failures.map(f => f.name).join(", "));
+            }
+            
+            setTimeout(() => {
+                button.textContent = originalText;
+                button.style.cssText = MultiGPUExtension.BUTTON_STYLES.base + MultiGPUExtension.BUTTON_STYLES.clearMemory;
+            }, 3000);
+        } finally {
+            button.disabled = false;
+        }
+    }
+
 
     renderSidebarContent(el) {
         el.innerHTML = '';
@@ -131,7 +183,9 @@ class MultiGPUExtension {
             label.htmlFor = `gpu-${worker.id}`;
             label.style.cssText = "cursor: pointer; display: flex; align-items: center; gap: 8px;";
             const gpuInfo = document.createElement("span");
-            gpuInfo.innerHTML = `<strong>${worker.name}</strong><br><small style="color: #888;">CUDA ${worker.cuda_device} • Port ${worker.port}</small>`;
+            const hostInfo = worker.host ? ` • ${worker.host}` : '';
+            const cudaInfo = worker.cuda_device !== undefined ? `CUDA ${worker.cuda_device} • ` : '';
+            gpuInfo.innerHTML = `<strong>${worker.name}</strong><br><small style="color: #888;">${cudaInfo}Port ${worker.port}${hostInfo}</small>`;
             label.appendChild(checkbox);
             label.appendChild(gpuInfo);
             gpuDiv.appendChild(label);
@@ -140,6 +194,14 @@ class MultiGPUExtension {
         gpuSection.appendChild(gpuList);
         container.appendChild(gpuSection);
         
+        const actionsSection = document.createElement("div");
+        actionsSection.style.cssText = "padding-top: 10px; margin-bottom: 15px; border-top: 1px solid #444;";
+        
+        const clearMemButton = this._createButton("Clear Worker VRAM", (e) => this._handleClearMemory(e.target), MultiGPUExtension.BUTTON_STYLES.clearMemory);
+        clearMemButton.title = "Clear VRAM on all enabled worker GPUs (not master)";
+        actionsSection.appendChild(clearMemButton);
+        
+        container.appendChild(actionsSection);
 
         const summarySection = document.createElement("div");
         summarySection.style.cssText = "border-top: 1px solid #444; padding-top: 10px;";
@@ -273,7 +335,7 @@ class MultiGPUExtension {
     }
 
     async _dispatchToWorker(worker, prompt, workflow) {
-        const workerUrl = `http://localhost:${worker.port}`;
+        const workerUrl = `http://${worker.host || window.location.hostname}:${worker.port}`;
         console.log(`[MultiGPU] Dispatching to worker: ${worker.name} (${workerUrl})`);
         const promptToSend = {
             prompt,
