@@ -162,8 +162,11 @@ This project is under active development. Contributions are welcome!
 
 ### Planned Features/Improvements
 
-- Support for remote workers over network
-   - Worker status (read/in progress/offline)
+- Custom launcher
+   - Launch local workers
+   - Launch remote workers (via SSH)
+- ~Support for remote workers over network~  
+   - Worker status (ready/in progress/offline)
    - Restart worker button
 - ~Better VRAM management for multi-GPU setups~
 - Better Seed handling
