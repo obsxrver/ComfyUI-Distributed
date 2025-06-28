@@ -31,7 +31,7 @@ For example, with 4 GPUs and a batch size of 2, you'll generate 8 images in para
 
 ## Requirements
 
-- ComfyUI installation
+- ComfyUI installation (venv, portable not supported yet)
 - Multiple NVIDIA GPUs
 - Python 3.8+
 - Windows (for the provided launcher script) or Linux/Mac with manual setup
