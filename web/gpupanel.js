@@ -14,8 +14,6 @@ class MultiGPUExtension {
         this.config = null;
         this.originalQueuePrompt = api.queuePrompt.bind(api);
 
-        // --- FIX [1 of 7]: Constructor Race Condition ---
-        // The interceptor is now set up *after* the config is guaranteed to be loaded.
         this.loadConfig().then(() => {
             this.registerSidebarTab();
             this.setupInterceptor();
