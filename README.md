@@ -16,12 +16,14 @@ ComfyUI-Distributed extends ComfyUI with the ability to distribute batch process
 - **Master-Worker Architecture**: Automatic coordination between GPU instances
 - **Dynamic Worker Management**: Enable/disable GPUs on-the-fly through the UI
 - **Parallel Execution**: All enabled GPUs process batches simultaneously for maximum speed
-- **Web UI Integration**: Seamless control panel integrated into ComfyUI's interface
-- **Smart Launch**: Launcher checks for running instances and starts only those that aren't running
+- **Web UI Integration**: Seamless control panel integrated into ComfyUI's sidebar
+- **Smart Launcher**: Unified launcher with multiple modes and instance detection
+- **VRAM Management**: Clear worker VRAM remotely through the UI
+- **Flexible Configuration**: JSON-based configuration with runtime updates
 
 ## How It Works
 
-1. Launch multiple ComfyUI instances, each assigned to a different GPU
+1. Launch multiple ComfyUI instances using the unified launcher
 2. One instance acts as the master (typically on CUDA device 0)
 3. Add the "Multi-GPU Collector" node to your workflow
 4. The extension automatically distributes batches across available GPUs
@@ -31,10 +33,10 @@ For example, with 4 GPUs and a batch size of 2, you'll generate 8 images in para
 
 ## Requirements
 
-- ComfyUI installation (venv, portable not supported yet)
+- Virtual environment with ComfyUI installed
+- ComfyUI installation with ComfyUI CLI (`comfy` command)
 - Multiple NVIDIA GPUs
 - Python 3.8+
-- Windows (for the provided launcher script) or Linux/Mac with manual setup
 
 ## Installation
 
@@ -50,47 +52,41 @@ For example, with 4 GPUs and a batch size of 2, you'll generate 8 images in para
 
 ### Quick Start (Windows)
 
-1. Copy the `launch_distributed.bat` file to your ComfyUI root directory (alongside other .bat files like `run_nvidia_gpu.bat`)
+1. Copy the `launch_distributed.bat` file to your ComfyUI root directory (alongside your `venv` folder)
 
 2. Edit the `gpu_config.json` file in `ComfyUI/custom_nodes/ComfyUI-Distributed/` to match your GPU setup:
    - Adjust the number of workers based on your available GPUs
    - Update CUDA device numbers if needed
    - Set appropriate ports (ensure they're not in use)
-   - Add custom launch arguments in `extra_args` for master and workers
+   - Add custom launch arguments in `extra_args`
 
-3. Run the launcher script from the ComfyUI root directory:
+3. Run the launcher from the ComfyUI root directory:
    ```bash
    launch_distributed.bat
    ```
+   
+   Or use command-line options:
+   ```bash
+   launch_distributed.bat master      # Launch master only
+   launch_distributed.bat all-fast    # Launch all with 2-second delays
+   launch_distributed.bat all-slow    # Launch all, wait for each to be ready
+   launch_distributed.bat venv        # Open command prompt with venv activated
+   launch_distributed.bat update      # Update ComfyUI
+   launch_distributed.bat update-nodes # Update all custom nodes
+   ```
 
-4. Open the master instance (usually http://localhost:8188)
+4. Open the master instance (check the launcher output for the URL)
 
 5. Add the "Multi-GPU Collector" node to your workflow
 
-6. Use the GPU control panel in the sidebar to:
-   - View GPU status and worker information
-   - Monitor active instances
-
-### Manual Setup (All Platforms)
-
-Start each ComfyUI instance with the appropriate CUDA device:
-
-```bash
-# Master instance (GPU 0)
-CUDA_VISIBLE_DEVICES=0 python main.py --port 8188
-
-# Worker instance (GPU 1)
-CUDA_VISIBLE_DEVICES=1 python main.py --port 8189 --enable-cors-header
-
-# Worker instance (GPU 2)
-CUDA_VISIBLE_DEVICES=2 python main.py --port 8190 --enable-cors-header
-
-# Continue for additional GPUs...
-```
+6. Use the Multi-GPU sidebar panel to:
+   - Enable/disable worker GPUs
+   - View worker status
+   - Clear worker VRAM
 
 ### Configuration
 
-The system uses a `gpu_config.json` file for configuration. Default configuration:
+The system uses a `gpu_config.json` file for configuration. Example configuration:
 
 ```json
 {
@@ -117,24 +113,48 @@ The system uses a `gpu_config.json` file for configuration. Default configuratio
       "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
     }
   ],
-  "settings": {
-    "retry_delay_ms": 500
-  }
+  "settings": {}
 }
 ```
 
 **Configuration Options:**
-- `extra_args`: Custom launch arguments for each instance (e.g., memory management flags)
-- `retry_delay_ms`: Delay between connection attempts during startup
-- Worker `enabled` flag: Control which GPUs are active
+- `master`: Master instance configuration
+  - `port`: Port number for the master instance
+  - `cuda_device`: CUDA device index
+  - `extra_args`: Custom launch arguments
+- `workers`: Array of worker configurations
+  - `id`: Unique worker identifier
+  - `name`: Display name in UI
+  - `cuda_device`: CUDA device index
+  - `port`: Port number for the worker
+  - `enabled`: Whether the worker is active
+  - `extra_args`: Custom launch arguments
+  - `host` (optional): Remote host address
+- `settings`: Additional settings (reserved for future use)
 
+### Remote Workers
+
+Remote workers are fully supported! Add a `host` field to any worker configuration:
+
+```json
+{
+  "id": 3,
+  "name": "Remote GPU",
+  "host": "192.168.1.100",
+  "port": 8190,
+  "enabled": true,
+  "extra_args": "--enable-cors-header"
+}
+```
+
+Ensure remote workers are started with `--enable-cors-header` and are accessible from the master instance.
 ## Workflow Integration
 
 The Multi-GPU Collector node integrates seamlessly with existing ComfyUI workflows:
 
 1. Connect the node after your image generation pipeline
 2. The node will automatically detect batch sizes and distribute work
-3. All GPUs will process their assigned batches
+3. All GPUs will process their assigned batches in parallel
 4. Results are collected and passed to the next node as a single batch
 
 ### Important Node Requirements
@@ -142,23 +162,37 @@ The Multi-GPU Collector node integrates seamlessly with existing ComfyUI workflo
 - **Batch Node**: Your workflow must include a node with the title "BATCH" or "BATCH SIZE" (case-insensitive). This is required for the Multi-GPU system to detect the batch size for distribution.
 - The system will show an error if no batch node with the correct title is found.
 
+## API Endpoints
+
+The extension provides several REST API endpoints for integration:
+
+- `GET /multigpu/config` - Retrieve current configuration
+- `POST /multigpu/config/update_worker` - Enable/disable a worker
+- `POST /multigpu/config/update_setting` - Update configuration settings
+- `POST /multigpu/prepare_job` - Prepare a multi-GPU job
+- `POST /multigpu/clear_memory` - Clear VRAM on workers
+- `POST /multigpu/job_complete` - Worker callback for job completion
+
 ## Performance Considerations
 
 - **Parallel Execution**: All enabled GPUs process simultaneously for maximum throughput
-- **Batch Size**: Total generation = batch_size × number_of_active_GPUs
+- **Batch Size**: Total generation = batch_size × (1 master + number_of_enabled_workers)
 - **Smart Launching**: The launcher only starts instances that aren't already running
 - **Memory Management**: Use appropriate `extra_args` in configuration for memory optimization
+- **Network Overhead**: Minimal - only final images are transferred between instances
 
 ## Troubleshooting
 
 - **Workers not connecting**: Ensure CORS headers are enabled (`--enable-cors-header`)
 - **VRAM errors**: Add memory management flags in `extra_args` (e.g., `--highvram`, `--disable-smart-memory`)
 - **Port conflicts**: Ensure each instance uses a unique port
-- **Partial startup**: The launcher will automatically start only missing instances without affecting running ones
+- **Launcher errors**: Ensure the batch file is in the ComfyUI root directory with the `venv` folder
+- **Batch node not found**: Ensure your workflow has a node titled "BATCH" or "BATCH SIZE"
+- **ComfyUI CLI not found**: Make sure ComfyUI CLI is installed (`pip install comfyui-cli`)
 
 ## Development
 
-This project is under active development. Contributions are welcome!
+This project is stable and ready for use. Contributions are welcome!
 
 ### Planned Features/Improvements
 
