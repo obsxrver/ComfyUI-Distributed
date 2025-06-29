@@ -239,42 +239,26 @@ class MultiGPUExtension {
 
     async executeParallelMultiGPU(promptWrapper) {
         try {
-            
-            const multi_job_id = "mgpu_" + Date.now();
             const enabledWorkers = this.enabledWorkers;
             
-            await this._prepareMultiGpuJob(multi_job_id);
+            // Find all collector nodes in the workflow
+            const collectorNodes = this.findNodesByClass(promptWrapper.output, "MultiGPUCollector");
+            
+            // Prepare a separate job queue on the backend for each collector instance using its unique node ID
+            const preparePromises = collectorNodes.map(node => this._prepareMultiGpuJob(node.id));
+            await Promise.all(preparePromises);
 
             const jobs = [];
             const participants = ['master', ...enabledWorkers.map(w => w.id)];
-            
-            // Track seed distribution for final summary
-            const seedDistribution = [];
 
             for (const participantId of participants) {
                 const jobApiPrompt = this._prepareApiPromptForParticipant(
-                    promptWrapper.output, multi_job_id, participantId,
+                    promptWrapper.output, participantId,
                     { 
                         enabled_worker_ids: enabledWorkers.map(w => w.id), 
                         workflow: promptWrapper.workflow
                     }
                 );
-                
-                // Use distributor nodes for seed display
-                const distributorNodes = this.findNodesByClass(jobApiPrompt, "MultiGPUDistributor");
-                
-                if (distributorNodes.length > 0) {
-                    // Get the first distributor node's seed value
-                    const firstDistributor = distributorNodes[0];
-                    const seedValue = jobApiPrompt[firstDistributor.id].inputs.seed;
-                    
-                    if (typeof seedValue === 'number' && seedValue >= 0) {
-                        seedDistribution.push({
-                            participant: participantId === 'master' ? 'Master' : `Worker ${enabledWorkers.findIndex(w => w.id === participantId)}`,
-                            seed: seedValue
-                        });
-                    }
-                }
                 
                 if (participantId === 'master') {
                     jobs.push({ type: 'master', promptWrapper: { ...promptWrapper, output: jobApiPrompt } });
@@ -319,7 +303,7 @@ class MultiGPUExtension {
     }
 
 
-    _prepareApiPromptForParticipant(baseApiPrompt, multi_job_id, participantId, options = {}) {
+    _prepareApiPromptForParticipant(baseApiPrompt, participantId, options = {}) {
         const jobApiPrompt = JSON.parse(JSON.stringify(baseApiPrompt));
         const isMaster = participantId === 'master';
         
@@ -343,14 +327,15 @@ class MultiGPUExtension {
         const collectorNodes = this.findNodesByClass(jobApiPrompt, "MultiGPUCollector");
         for (const collector of collectorNodes) {
             const { inputs } = jobApiPrompt[collector.id];
-            inputs.multi_job_id = multi_job_id;
+            // KEY CHANGE: Use the node's own ID as the job ID
+            inputs.multi_job_id = collector.id;
             inputs.is_worker = !isMaster;
             if (isMaster) {
                 inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
             } else {
                 inputs.master_url = window.location.origin;
-                // Add a unique identifier to prevent caching issues
-                inputs.worker_job_id = `${multi_job_id}_worker_${participantId}`;
+                // Add a unique identifier per-collector to prevent caching issues
+                inputs.worker_job_id = `${collector.id}_worker_${participantId}`;
                 inputs.worker_id = participantId;
             }
         }
