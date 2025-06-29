@@ -208,7 +208,7 @@ This project is under active development. Contributions are welcome!
    - Batch Size Override
       - UI control to dynamically adjust batch size per generation
 - Handle worker failure
-- ~Compatibility with FLUX Continuum `CTRL+SHIFT+C` shortcut~ the commit 027629c753dd3aae1ceeff5214ceb701943dd3fe
+- ~Compatibility with FLUX Continuum `CTRL+SHIFT+C` shortcut~ [Commit 027629c](https://github.com/robertvoy/ComfyUI-Flux-Continuum/commit/027629c753dd3aae1ceeff5214ceb701943dd3fe)
 
 ## License
 
