@@ -387,14 +387,8 @@ class MultiGPUDistributor:
             "required": {
                 "seed": ("INT", {
                     "default": 0, 
-                    "min": -2147483648,
-                    "max": 2147483647,
-                    "forceInput": False  # Widget by default, can be converted to input
-                }),
-                "batch_size": ("INT", {
-                    "default": 1,
-                    "min": 1,
-                    "max": 4096,
+                    "min": 0,
+                    "max": 1125899906842624,
                     "forceInput": False  # Widget by default, can be converted to input
                 }),
             },
@@ -404,16 +398,16 @@ class MultiGPUDistributor:
             },
         }
     
-    RETURN_TYPES = ("INT", "INT")
-    RETURN_NAMES = ("seed", "batch_size")
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("seed",)
     FUNCTION = "distribute"
     CATEGORY = "utils"
     
-    def distribute(self, seed, batch_size, is_worker=False, worker_id=""):
+    def distribute(self, seed, is_worker=False, worker_id=""):
         if not is_worker:
             # Master node: pass through original values
-            print(f"[MultiGPU Distributor] Master: seed={seed}, batch={batch_size}")
-            return (seed, batch_size)
+            print(f"[MultiGPU Distributor] Master: seed={seed}")
+            return (seed,)
         else:
             # Worker node: apply offset based on worker index
             # Find worker index from enabled_worker_ids
@@ -427,12 +421,12 @@ class MultiGPUDistributor:
                 
                 offset = worker_index + 1
                 new_seed = seed + offset
-                print(f"[MultiGPU Distributor] Worker {worker_index}: seed={seed} → {new_seed}, batch={batch_size}")
-                return (new_seed, batch_size)
+                print(f"[MultiGPU Distributor] Worker {worker_index}: seed={seed} → {new_seed}")
+                return (new_seed,)
             except (ValueError, IndexError) as e:
                 print(f"[MultiGPU Distributor] Error parsing worker_id '{worker_id}': {e}")
                 # Fallback: return original seed
-                return (seed, batch_size)
+                return (seed,)
 
 NODE_CLASS_MAPPINGS = { 
     "MultiGPUCollector": MultiGPUCollectorNode,
@@ -440,5 +434,5 @@ NODE_CLASS_MAPPINGS = {
 }
 NODE_DISPLAY_NAME_MAPPINGS = { 
     "MultiGPUCollector": "Multi-GPU Collector",
-    "MultiGPUDistributor": "Multi-GPU Distributor"
+    "MultiGPUDistributor": "Multi-GPU Seed"
 }
