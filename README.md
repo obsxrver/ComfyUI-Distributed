@@ -16,6 +16,7 @@ ComfyUI-Distributed extends ComfyUI with the ability to distribute batch process
 - **Master-Worker Architecture**: Automatic coordination between GPU instances
 - **Dynamic Worker Management**: Enable/disable GPUs on-the-fly through the UI
 - **Parallel Execution**: All enabled GPUs process batches simultaneously for maximum speed
+- **Automatic Seed Distribution**: Smart seed offsetting across workers
 - **Web UI Integration**: Seamless control panel integrated into ComfyUI's sidebar
 - **Smart Launcher**: Unified launcher with multiple modes and instance detection
 - **VRAM Management**: Clear worker VRAM remotely through the UI
@@ -26,10 +27,25 @@ ComfyUI-Distributed extends ComfyUI with the ability to distribute batch process
 1. Launch multiple ComfyUI instances using the unified launcher
 2. One instance acts as the master (typically on CUDA device 0)
 3. Add the "Multi-GPU Collector" node to your workflow
-4. The extension automatically distributes batches across available GPUs
-5. Results are collected and combined by the master instance
+4. Optionally add "Multi-GPU Distributor" nodes for automatic seed distribution
+5. The extension automatically distributes batches across available GPUs
+6. Results are collected and combined by the master instance
 
 For example, with 4 GPUs and a batch size of 2, you'll generate 8 images in parallel.
+
+## Nodes
+
+### Multi-GPU Distributor
+Handles automatic seed distribution for diverse results:
+- Master uses the original seed value
+- Workers automatically get offset seeds (seed + worker_index + 1)
+- Can connect to any node that accepts seed/batch_size inputs
+- Ensures each GPU generates unique images
+
+### Multi-GPU Collector
+The core node that handles job result collection:
+- Automatically detects enabled workers
+- Collects and combines results in a predictable order
 
 ## Requirements
 
@@ -91,9 +107,9 @@ The system uses a `gpu_config.json` file for configuration. Example configuratio
 ```json
 {
   "master": {
-    "port": 8480,
+    "port": 8080,
     "cuda_device": 0,
-    "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
+    "extra_args": "--mmap-torch-files --listen"
   },
   "workers": [
     {
@@ -102,7 +118,7 @@ The system uses a `gpu_config.json` file for configuration. Example configuratio
       "cuda_device": 1,
       "port": 8180,
       "enabled": true,
-      "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
+      "extra_args": "--mmap-torch-files --listen"
     },
     {
       "id": 2,
@@ -110,7 +126,15 @@ The system uses a `gpu_config.json` file for configuration. Example configuratio
       "cuda_device": 2,
       "port": 8280,
       "enabled": true,
-      "extra_args": "--mmap-torch-files --highvram --disable-smart-memory"
+      "extra_args": "--mmap-torch-files --listen"
+    },
+    {
+      "id": 3,
+      "name": "GPU 3",
+      "cuda_device": 3,
+      "port": 8380,
+      "enabled": false,
+      "extra_args": "--mmap-torch-files --listen --reserve-vram 2"
     }
   ],
   "settings": {}
@@ -143,24 +167,49 @@ Remote workers are fully supported! Add a `host` field to any worker configurati
   "host": "192.168.1.100",
   "port": 8190,
   "enabled": true,
-  "extra_args": "--enable-cors-header"
+  "extra_args": "--enable-cors-header --listen"
 }
 ```
 
-Ensure remote workers are started with `--enable-cors-header` and are accessible from the master instance.
+Ensure remote workers:
+- Are started with `--listen --enable-cors-header`
+- Are accessible from the master instance
+- Have the same models and custom nodes installed
+
 ## Workflow Integration
 
-The Multi-GPU Collector node integrates seamlessly with existing ComfyUI workflows:
+### Basic Setup
+1. Add "Multi-GPU Collector" node after your image generation pipeline
+2. The node automatically handles distribution and collection
+3. Connect subsequent nodes normally - they'll receive the combined batch
 
-1. Connect the node after your image generation pipeline
-2. The node will automatically detect batch sizes and distribute work
-3. All GPUs will process their assigned batches in parallel
-4. Results are collected and passed to the next node as a single batch
+### Seed Distribution
+This node is optional, it will help you control seeds across workers. Without it, you will generate exactly the same workflow as the master (same seed):
+1. Add "Multi-GPU Seed" node(s) before your samplers
+2. Connect the seed output to your sampling node(s)
+3. Each GPU will automatically use different seeds:
+   - Master: original seed
+   - Worker 0: seed + 1
+   - Worker 1: seed + 2
+   - etc.
 
-### Important Node Requirements
+### Result Ordering
+Images are returned in a predictable order:
+1. All images from master (in batch order)
+2. All images from worker 1 (in batch order)
+3. All images from worker 2 (in batch order)
+4. etc.
 
-- **Batch Node**: Your workflow must include a node with the title "BATCH" or "BATCH SIZE" (case-insensitive). This is required for the Multi-GPU system to detect the batch size for distribution.
-- The system will show an error if no batch node with the correct title is found.
+## API Endpoints
+
+The extension provides REST API endpoints for integration:
+
+- `GET /multigpu/config` - Retrieve current configuration
+- `POST /multigpu/config/update_worker` - Enable/disable a worker
+- `POST /multigpu/config/update_setting` - Update configuration settings
+- `POST /multigpu/prepare_job` - Prepare a multi-GPU job
+- `POST /multigpu/clear_memory` - Clear VRAM on workers
+- `POST /multigpu/job_complete` - Worker callback for job completion
 
 ## API Endpoints
 
@@ -203,10 +252,7 @@ This project is under active development. Contributions are welcome!
    - Worker status (ready/in progress/offline)
    - Restart worker button
 - ~Better VRAM management for multi-GPU setups~
-- Better Seed handling
-- Better Batch handling
-   - Batch Size Override
-      - UI control to dynamically adjust batch size per generation
+- ~Better Seed handling~
 - Handle worker failure
 - ~Compatibility with FLUX Continuum `CTRL+SHIFT+C` shortcut~ [Commit 027629c](https://github.com/robertvoy/ComfyUI-Flux-Continuum/commit/027629c753dd3aae1ceeff5214ceb701943dd3fe)
 
