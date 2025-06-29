@@ -224,12 +224,13 @@ class MultiGPUExtension {
         }
     }
 
+    // --- Helper Methods ---
+
     // --- Core Logic & Execution ---
 
     setupInterceptor() {
         api.queuePrompt = async (number, prompt) => {
             if (this.isEnabled && this.findNodesByClass(prompt.output, "MultiGPUCollector").length > 0) {
-                console.log("[MultiGPU] Intercepting prompt. Executing parallel Multi-GPU.");
                 return await this.executeParallelMultiGPU(prompt);
             }
             return this.originalQueuePrompt(number, prompt);
@@ -238,20 +239,43 @@ class MultiGPUExtension {
 
     async executeParallelMultiGPU(promptWrapper) {
         try {
-            console.log("[MultiGPU] Collector node found. Activating standard Multi-GPU execution.");
+            
             const multi_job_id = "mgpu_" + Date.now();
             const enabledWorkers = this.enabledWorkers;
-            const batchSize = this._getBatchSizeFromPrompt(promptWrapper);
+            
             await this._prepareMultiGpuJob(multi_job_id);
 
             const jobs = [];
             const participants = ['master', ...enabledWorkers.map(w => w.id)];
+            
+            // Track seed distribution for final summary
+            const seedDistribution = [];
 
             for (const participantId of participants) {
                 const jobApiPrompt = this._prepareApiPromptForParticipant(
                     promptWrapper.output, multi_job_id, participantId,
-                    { enabled_worker_ids: enabledWorkers.map(w => w.id), worker_batch_size: batchSize }
+                    { 
+                        enabled_worker_ids: enabledWorkers.map(w => w.id), 
+                        workflow: promptWrapper.workflow
+                    }
                 );
+                
+                // Use distributor nodes for seed display
+                const distributorNodes = this.findNodesByClass(jobApiPrompt, "MultiGPUDistributor");
+                
+                if (distributorNodes.length > 0) {
+                    // Get the first distributor node's seed value
+                    const firstDistributor = distributorNodes[0];
+                    const seedValue = jobApiPrompt[firstDistributor.id].inputs.seed;
+                    
+                    if (typeof seedValue === 'number' && seedValue >= 0) {
+                        seedDistribution.push({
+                            participant: participantId === 'master' ? 'Master' : `Worker ${enabledWorkers.findIndex(w => w.id === participantId)}`,
+                            seed: seedValue
+                        });
+                    }
+                }
+                
                 if (participantId === 'master') {
                     jobs.push({ type: 'master', promptWrapper: { ...promptWrapper, output: jobApiPrompt } });
                 } else {
@@ -259,8 +283,9 @@ class MultiGPUExtension {
                     if (worker) jobs.push({ type: 'worker', worker, prompt: jobApiPrompt, workflow: promptWrapper.workflow });
                 }
             }
-            await this._executeJobs(jobs);
-            return { "prompt_id": "multi-gpu-parallel-job-dispatched" };
+            
+            const result = await this._executeJobs(jobs);
+            return result;
         } catch (error) {
             console.error("[MultiGPU] Parallel execution failed:", error);
             alert(`[MultiGPU] Parallel execution failed: ${error.message}`);
@@ -270,12 +295,19 @@ class MultiGPUExtension {
 
 
     async _executeJobs(jobs) {
-        const promises = jobs.map(job => 
-            job.type === 'master' 
-                ? this.originalQueuePrompt(0, job.promptWrapper) 
-                : this._dispatchToWorker(job.worker, job.prompt, job.workflow)
-        );
+        let masterPromptId = null;
+        const promises = jobs.map(job => {
+            if (job.type === 'master') {
+                return this.originalQueuePrompt(0, job.promptWrapper).then(result => {
+                    masterPromptId = result;
+                    return result;
+                });
+            } else {
+                return this._dispatchToWorker(job.worker, job.prompt, job.workflow);
+            }
+        });
         await Promise.all(promises);
+        return masterPromptId || { "prompt_id": "multi-gpu-job-dispatched" };
     }
     
     // --- Helper Methods ---
@@ -286,36 +318,43 @@ class MultiGPUExtension {
             .map(([nodeId, nodeData]) => ({ id: nodeId, data: nodeData }));
     }
 
-    findBatchNode(workflow) {
-        return workflow.nodes.find(node => {
-            const title = node.title?.trim().toUpperCase();
-            const displayName = node.properties?.["Node name for S&R"]?.trim().toUpperCase();
-            return title === "BATCH" || title === "BATCH SIZE" || displayName === "BATCH" || displayName === "BATCH SIZE";
-        });
-    }
-
-    _getBatchSizeFromPrompt(promptWrapper) {
-        const batchNode = this.findBatchNode(promptWrapper.workflow);
-        if (!batchNode) throw new Error("MultiGPU: Could not find a 'Batch' node.");
-        return promptWrapper.output[String(batchNode.id)].inputs.batch_size || promptWrapper.output[String(batchNode.id)].inputs.value || 1;
-    }
 
     _prepareApiPromptForParticipant(baseApiPrompt, multi_job_id, participantId, options = {}) {
         const jobApiPrompt = JSON.parse(JSON.stringify(baseApiPrompt));
-        const collectorNodes = this.findNodesByClass(jobApiPrompt, "MultiGPUCollector");
         const isMaster = participantId === 'master';
-
+        
+        // Handle MultiGPU distributor nodes
+        const distributorNodes = this.findNodesByClass(jobApiPrompt, "MultiGPUDistributor");
+        if (distributorNodes.length > 0) {
+            console.log(`[MultiGPU] Found ${distributorNodes.length} distributor node(s)`);
+        }
+        
+        for (const distributor of distributorNodes) {
+            const { inputs } = jobApiPrompt[distributor.id];
+            inputs.is_worker = !isMaster;
+            if (!isMaster) {
+                const workerIndex = options.enabled_worker_ids.indexOf(participantId);
+                inputs.worker_id = `worker_${workerIndex}`;
+                console.log(`[MultiGPU] Set distributor ${distributor.id} for worker ${workerIndex}`);
+            }
+        }
+        
+        // Handle MultiGPU collector nodes
+        const collectorNodes = this.findNodesByClass(jobApiPrompt, "MultiGPUCollector");
         for (const collector of collectorNodes) {
             const { inputs } = jobApiPrompt[collector.id];
             inputs.multi_job_id = multi_job_id;
             inputs.is_worker = !isMaster;
             if (isMaster) {
                 inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
-                inputs.worker_batch_size = options.worker_batch_size || 1;
             } else {
                 inputs.master_url = window.location.origin;
+                // Add a unique identifier to prevent caching issues
+                inputs.worker_job_id = `${multi_job_id}_worker_${participantId}`;
+                inputs.worker_id = participantId;
             }
         }
+        
         return jobApiPrompt;
     }
 
@@ -334,12 +373,14 @@ class MultiGPUExtension {
 
     async _dispatchToWorker(worker, prompt, workflow) {
         const workerUrl = `http://${worker.host || window.location.hostname}:${worker.port}`;
-        console.log(`[MultiGPU] Dispatching to worker: ${worker.name} (${workerUrl})`);
+        
         const promptToSend = {
             prompt,
             extra_data: { extra_pnginfo: { workflow } },
             client_id: api.clientId
         };
+        
+        
         try {
             await fetch(`${workerUrl}/prompt`, { 
                 method: 'POST', 
