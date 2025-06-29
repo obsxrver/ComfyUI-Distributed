@@ -6,7 +6,7 @@ cls
 
 echo.
 echo  ================================================================
-echo                       ComfyUI Unified Launcher                  
+echo                    ComfyUI Unified Launcher                      
 echo  ================================================================
 echo.
 
@@ -29,28 +29,28 @@ goto :SHOW_MENU
 :SHOW_MENU
 color 0B
 echo  ----------------------------------------------------------------
-echo                        Launch Mode Selection                    
+echo           Launch Mode Selection                         
 echo  ----------------------------------------------------------------
 echo.
-echo    [1] Master only
-echo        ^> Launch only the master instance
+echo   [1] Master only
+echo       ^> Launch only the master instance
 echo.
-echo    [2] All instances (fast)
-echo        ^> Launch all instances with 2-second delays
+echo   [2] All instances (fast)
+echo       ^> Launch all instances with 2-second delays
 echo.
-echo    [3] All instances (sequential)
-echo        ^> Launch all instances, wait for each to be ready
+echo   [3] All instances (sequential)
+echo       ^> Launch all instances, wait for each to be ready
 echo.
-echo    [4] Activate virtual environment
-echo        ^> Open command prompt with venv activated
+echo   [4] Activate virtual environment
+echo       ^> Open command prompt with venv activated
 echo.
-echo    [5] Update ComfyUI
-echo        ^> Update ComfyUI to latest version
+echo   [5] Update ComfyUI
+echo       ^> Update ComfyUI to latest version
 echo.
-echo    [6] Update custom nodes
-echo        ^> Update all custom nodes to latest versions
+echo   [6] Update custom nodes
+echo       ^> Update all custom nodes to latest versions
 echo.
-echo    [Q] Quit
+echo   [Q] Quit
 echo.
 echo  ----------------------------------------------------------------
 echo   TIP: You can also launch directly from command line:
@@ -62,39 +62,44 @@ echo        launch_comfyui.bat update
 echo        launch_comfyui.bat update-nodes
 echo  ----------------------------------------------------------------
 echo.
-set /p "CHOICE=  ^> Enter your choice (1, 2, 3, 4, 5, 6, or Q): "
 
-if /i "%CHOICE%"=="1" (
-    set "MODE=master"
-    goto :SETUP
-)
-if /i "%CHOICE%"=="2" (
-    set "MODE=all-fast"
-    goto :SETUP
-)
-if /i "%CHOICE%"=="3" (
+:: Use CHOICE to wait for a single keypress without needing Enter
+:: /C specifies the allowed characters. /N hides the default "[1,2,3,4,5,6,Q]?" prompt. /M sets a custom message.
+choice /c 123456Q /n /m "  ^> Enter your choice: "
+echo.
+
+:: Check the ERRORLEVEL. IMPORTANT: Must check from highest to lowest!
+:: CHOICE sets ERRORLEVEL to the index of the character in /C
+:: 1=1, 2=2, 3=3, 4=4, 5=5, 6=6, Q=7
+
+if errorlevel 7 goto :QUIT_CHOICE
+if errorlevel 6 goto :UPDATE_NODES
+if errorlevel 5 goto :UPDATE_COMFYUI
+if errorlevel 4 goto :ACTIVATE_VENV
+if errorlevel 3 (
     set "MODE=all-slow"
     goto :SETUP
 )
-if /i "%CHOICE%"=="4" (
-    goto :ACTIVATE_VENV
+if errorlevel 2 (
+    set "MODE=all-fast"
+    goto :SETUP
 )
-if /i "%CHOICE%"=="5" (
-    goto :UPDATE_COMFYUI
-)
-if /i "%CHOICE%"=="6" (
-    goto :UPDATE_NODES
-)
-if /i "%CHOICE%"=="q" (
-    echo Exiting...
-    exit /b 0
+if errorlevel 1 (
+    set "MODE=master"
+    goto :SETUP
 )
 
+:: This part of the script should now be unreachable, but it's good practice to handle it.
 echo.
-echo  ERROR: Invalid choice. Please enter 1, 2, 3, 4, 5, 6, or Q.
+echo  ERROR: Invalid choice.
 echo.
 timeout /t 2 /nobreak >nul
 goto :SHOW_MENU
+
+:QUIT_CHOICE
+echo Exiting...
+timeout /t 1 /nobreak >nul
+exit /b 0
 
 :SETUP
 echo Mode: %MODE%
@@ -389,7 +394,7 @@ exit
 :ACTIVATE_VENV
 echo.
 echo  ================================================================
-echo                    Activating Virtual Environment
+echo                 Activating Virtual Environment
 echo  ================================================================
 echo.
 
@@ -420,7 +425,7 @@ exit
 :UPDATE_COMFYUI
 echo.
 echo  ================================================================
-echo                        Updating ComfyUI
+echo                       Updating ComfyUI
 echo  ================================================================
 echo.
 
@@ -461,7 +466,7 @@ exit
 :UPDATE_NODES
 echo.
 echo  ================================================================
-echo                      Updating Custom Nodes
+echo                     Updating Custom Nodes
 echo  ================================================================
 echo.
 
