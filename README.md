@@ -211,17 +211,6 @@ The extension provides REST API endpoints for integration:
 - `POST /multigpu/clear_memory` - Clear VRAM on workers
 - `POST /multigpu/job_complete` - Worker callback for job completion
 
-## API Endpoints
-
-The extension provides several REST API endpoints for integration:
-
-- `GET /multigpu/config` - Retrieve current configuration
-- `POST /multigpu/config/update_worker` - Enable/disable a worker
-- `POST /multigpu/config/update_setting` - Update configuration settings
-- `POST /multigpu/prepare_job` - Prepare a multi-GPU job
-- `POST /multigpu/clear_memory` - Clear VRAM on workers
-- `POST /multigpu/job_complete` - Worker callback for job completion
-
 ## Performance Considerations
 
 - **Parallel Execution**: All enabled GPUs process simultaneously for maximum throughput
@@ -254,6 +243,7 @@ This project is under active development. Contributions are welcome!
 - ~Better VRAM management for multi-GPU setups~
 - ~Better Seed handling~
 - Handle worker failure
+- Handle multiple image output nodes within 1 workflow
 - ~Compatibility with FLUX Continuum `CTRL+SHIFT+C` shortcut~ [Commit 027629c](https://github.com/robertvoy/ComfyUI-Flux-Continuum/commit/027629c753dd3aae1ceeff5214ceb701943dd3fe)
 
 ## License
