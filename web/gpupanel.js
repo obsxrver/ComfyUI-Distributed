@@ -239,13 +239,17 @@ class MultiGPUExtension {
 
     async executeParallelMultiGPU(promptWrapper) {
         try {
+            const executionPrefix = "exec_" + Date.now(); // Unique ID for this specific execution
             const enabledWorkers = this.enabledWorkers;
             
             // Find all collector nodes in the workflow
             const collectorNodes = this.findNodesByClass(promptWrapper.output, "MultiGPUCollector");
             
-            // Prepare a separate job queue on the backend for each collector instance using its unique node ID
-            const preparePromises = collectorNodes.map(node => this._prepareMultiGpuJob(node.id));
+            // Map original node IDs to truly unique job IDs for this specific run
+            const job_id_map = new Map(collectorNodes.map(node => [node.id, `${executionPrefix}_${node.id}`]));
+            
+            // Prepare a separate job queue on the backend for each unique job ID
+            const preparePromises = Array.from(job_id_map.values()).map(uniqueId => this._prepareMultiGpuJob(uniqueId));
             await Promise.all(preparePromises);
 
             const jobs = [];
@@ -256,7 +260,8 @@ class MultiGPUExtension {
                     promptWrapper.output, participantId,
                     { 
                         enabled_worker_ids: enabledWorkers.map(w => w.id), 
-                        workflow: promptWrapper.workflow
+                        workflow: promptWrapper.workflow,
+                        job_id_map: job_id_map // Pass the map of unique IDs
                     }
                 );
                 
@@ -327,15 +332,19 @@ class MultiGPUExtension {
         const collectorNodes = this.findNodesByClass(jobApiPrompt, "MultiGPUCollector");
         for (const collector of collectorNodes) {
             const { inputs } = jobApiPrompt[collector.id];
-            // KEY CHANGE: Use the node's own ID as the job ID
-            inputs.multi_job_id = collector.id;
+            
+            // Get the unique job ID from the map created for this execution
+            const uniqueJobId = options.job_id_map ? options.job_id_map.get(collector.id) : collector.id;
+            
+            // Use the truly unique ID for this execution
+            inputs.multi_job_id = uniqueJobId;
             inputs.is_worker = !isMaster;
             if (isMaster) {
                 inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
             } else {
                 inputs.master_url = window.location.origin;
-                // Add a unique identifier per-collector to prevent caching issues
-                inputs.worker_job_id = `${collector.id}_worker_${participantId}`;
+                // Also make the worker_job_id unique to prevent potential caching issues
+                inputs.worker_job_id = `${uniqueJobId}_worker_${participantId}`;
                 inputs.worker_id = participantId;
             }
         }
