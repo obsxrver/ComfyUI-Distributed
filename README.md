@@ -240,6 +240,7 @@ This project is under active development. Contributions are welcome!
 - ~Support for remote workers over network~  
    - Worker status (ready/in progress/offline)
    - Restart worker button
+- Improve worker timeout logic
 - ~Better VRAM management for multi-GPU setups~
 - ~Better Seed handling~
 - ~Handle worker failure~
