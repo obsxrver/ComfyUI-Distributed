@@ -314,7 +314,7 @@ class MultiGPUCollectorNode:
             workers_done = set()
             
             # Use a reasonable timeout for the first image
-            timeout = 60.0
+            timeout = 10.0
             
             while len(workers_done) < num_workers:
                 try:
