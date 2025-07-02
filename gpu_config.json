@@ -10,7 +10,7 @@
       "name": "GPU 1",
       "cuda_device": 1,
       "port": 8180,
-      "enabled": true,
+      "enabled": false,
       "extra_args": "--mmap-torch-files --listen"
     },
     {
@@ -18,7 +18,7 @@
       "name": "GPU 2",
       "cuda_device": 2,
       "port": 8280,
-      "enabled": true,
+      "enabled": false,
       "extra_args": "--mmap-torch-files --listen"
     },
     {
