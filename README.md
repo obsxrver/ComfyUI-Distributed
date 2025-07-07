@@ -43,6 +43,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 ## Quick Start
 
 ### Adding Local Workers
+![Clipboard Image (4)](https://github.com/user-attachments/assets/9c1d6d0e-3fd1-43e3-97c4-7c6bf2952b19)
 
 1. **Open** the Distributed GPU panel (sidebar on the left)
 2. **Click** "Add Worker" in the UI
