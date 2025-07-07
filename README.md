@@ -107,7 +107,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 **Usage**:
 1. Upscale your image with a regular upscale model (ESRGAN, etc.)
 2. Feed the upscaled image into this node
-3. Configure tile settings based on your VRAM
+3. Configure tile settings
 4. Enable workers for faster processing
 
 ---
@@ -121,10 +121,9 @@ The control center for your distributed setup:
 | Feature | Description |
 |---------|-------------|
 | **Worker Status** | Real-time status indicators |
-| **Launch/Stop** | Control individual workers |
+| **Launch/Stop** | Control individual local workers |
 | **Clear Memory** | Free VRAM on all workers |
 | **Interrupt** | Stop current processing |
-| **Auto-detect IP** | Find best network interface |
 | **Worker Logs** | View real-time logs |
 
 ---
