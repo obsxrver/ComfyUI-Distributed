@@ -1,5 +1,7 @@
 # ComfyUI-Distributed
 
+![Clipboard Image (3)](https://github.com/user-attachments/assets/19fdd1be-8f6e-4df5-bcd9-538ef566fa82)
+
 > **Supercharge your ComfyUI workflows with distributed GPU processing**
 
 A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that enables distributed processing across multiple GPUs and machines. Speed up your image generation and upscaling workflows by leveraging all available GPU resources in your network.
@@ -121,9 +123,7 @@ The control center for your distributed setup:
 
 ### Basic Distributed Generation
 
-```
-Your Workflow → Distributed Seed → KSampler → VAE Decode → Distributed Collector → Output
-```
+![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
 
 1. Create your normal ComfyUI workflow
 2. Add **Distributed Seed** → connect to sampler's seed
@@ -133,9 +133,7 @@ Your Workflow → Distributed Seed → KSampler → VAE Decode → Distributed C
 
 ### Distributed Upscaling
 
-```
-Load Image → Upscale Model → Ultimate SD Upscale Distributed → Save Image
-```
+![Clipboard Image (2)](https://github.com/user-attachments/assets/ec2548d0-1fc7-4705-801f-3270d720cfce)
 
 1. Load your image
 2. Upscale with ESRGAN or similar
@@ -198,15 +196,3 @@ This project is under active development. Contributions are welcome!
 - [ ] Remote worker control via SSH
 - [ ] View remote worker logs in UI
 - [ ] Improve worker timeout logic
-- [ ] Authentication for network security
-- [ ] Automatic model synchronization
-
----
-
-<div align="center">
-
-**Made with ❤️ for the ComfyUI community**
-
-[Report Issues](https://github.com/yourusername/ComfyUI-Distributed/issues) • [Request Features](https://github.com/yourusername/ComfyUI-Distributed/issues)
-
-</div>
