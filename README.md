@@ -43,27 +43,36 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 ## Quick Start
 
 ### Adding Local Workers
-![Clipboard Image (4)](https://github.com/user-attachments/assets/9c1d6d0e-3fd1-43e3-97c4-7c6bf2952b19)
+![Distributed GPU Panel](https://github.com/user-attachments/assets/9c1d6d0e-3fd1-43e3-97c4-7c6bf2952b19)
+*The Distributed GPU panel can be found in the sidebar on the left.*
 
-1. **Open** the Distributed GPU panel (sidebar on the left)
-2. **Click** "Add Worker" in the UI
-3. **Configure** your worker:
-   - **Name**: Descriptive name for the worker
-   - **Host**: `localhost` for same machine
-   - **Port**: Unique port number (e.g., 8189, 8190...)
-   - **CUDA Device**: GPU index from `nvidia-smi`
-   - **Extra Args**: Optional ComfyUI arguments
-4. **Save** and optionally launch the worker
+1. **Open** the Distributed GPU panel.
+2. **Click** "Add Worker" in the UI.
+3. **Configure** your local worker:
+   - **Name**: A descriptive name for the worker (e.g., "My Gaming PC GPU 0")
+   - **Port**: A unique port number for this worker (e.g., 8189, 8190...).
+   - **CUDA Device**: The GPU index from `nvidia-smi` (e.g., 0, 1).
+   - **Extra Args**: Optional ComfyUI arguments for this specific worker.
+4. **Save** and optionally launch the local worker.
 
 ### Adding Remote Workers
 
-1. **Follow** the same steps as above, but:
-2. **Add** `--listen` to the 'Extra Args' field ⚠️ **Required!**
-3. **Open** the worker port in your firewall
-4. **Launch** ComfyUI on the remote machine
-5. **Add** the worker using the remote machine's IP address
-
-> **Tip**: If the remote machine has multiple GPUs, create multiple workers with different CUDA devices and ports
+1. **On the Remote Worker Machine:**
+   - **Launch** ComfyUI with the `--listen` argument. ⚠️ **Required!**
+   - **Add** workers in the UI panel if the remote machine has more than one GPU.
+      - Make sure that they also have `--listen` set in `Extra Args`.
+      - Then launch them.
+   - **Open** the configured worker port(s) (e.g., 8189, 8190) in the remote worker's firewall.
+  
+2. **On the Main Machine:**
+   - **Open** the Distributed GPU panel (sidebar on the left).
+   - **Click** "Add Worker."
+   - **Enable** "Remote Worker" checkbox.
+   - **Configure** your remote worker:
+     - **Name**: A descriptive name for the worker (e.g., "Server Rack GPU 0")
+     - **Host**: The remote worker's IP address.
+     - **Port**: The port number used when launching ComfyUI on the remote worker (e.g., 8189).
+   - **Save** the remote worker configuration.
 
 ### Configuration Tips
 
