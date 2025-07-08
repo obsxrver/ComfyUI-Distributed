@@ -36,7 +36,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
    git clone https://github.com/yourusername/ComfyUI-Distributed.git
    ```
 
-2. **Restart ComfyUI** - add `--enable-cors-header` to your launch arguments
+2. **Restart ComfyUI** - If you will be using remote workers, add `--enable-cors-header` to your launch arguments
 
 ---
 
