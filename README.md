@@ -2,21 +2,29 @@
 
 ![Clipboard Image (3)](https://github.com/user-attachments/assets/19fdd1be-8f6e-4df5-bcd9-538ef566fa82)
 
-> **Supercharge your ComfyUI workflows with distributed GPU processing**
+> **Supercharge your ComfyUI workflows with multi-GPU processing**
 
-A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that enables distributed processing across multiple GPUs and machines. Speed up your image generation and upscaling workflows by leveraging all available GPU resources in your network.
+A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that enables parallel and distributed processing across multiple GPUs and machines. Speed up your image generation and upscaling workflows by leveraging all available GPU resources in your network.
 
 ---
 
-## Features
+## Key Features
 
-- **Parallel Processing** - Multiply your workflows across GPUs automatically
-- **Distributed Upscaling** - Tile-based upscaling with intelligent work distribution
+### Parallel Workflow Processing
+- **Parallel Generation** - Run the same workflow on multiple GPUs simultaneously with different seeds
+- **Automatic Load Balancing** - Distribute workflow execution across available workers
+- **Batch Acceleration** - Generate multiple variations faster by using all your GPUs
+
+### Distributed Upscaling
+- **True Distributed Processing** - Split large upscaling tasks into tiles processed across multiple GPUs
+- **Tile-based Upscaling** - Intelligent work distribution for Ultimate SD Upscale
+
+### Management & Monitoring
 - **Automatic Worker Management** - Launch and monitor workers from the UI
 - **Network Support** - Use GPUs across different machines on your network
 - **Real-time Monitoring** - Track worker status and performance from the UI
 - **Easy Configuration** - JSON-based configuration with UI controls
-- **Memory Management** - Built-in VRAM clearing and optimization
+- **Memory Management** - Built-in VRAM clearing
 
 ---
 
@@ -43,7 +51,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 
 ### Adding Local Workers
 ![Distributed GPU Panel](https://github.com/user-attachments/assets/9c1d6d0e-3fd1-43e3-97c4-7c6bf2952b19)
-*The Distributed GPU panel can be found in the sidebar on the left.*
+> Local Workers: Additional ComfyUI instances running on the same computer (with multi-GPUs) as your main ComfyUI installation.
 
 1. **Open** the Distributed GPU panel.
 2. **Click** "Add Worker" in the UI.
@@ -55,6 +63,8 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 4. **Save** and optionally launch the local worker.
 
 ### Adding Remote Workers
+
+> Remote Workers: ComfyUI instances running on completely different computers on your network. These allow you to harness GPU power from other machines. Remote workers must be manually started on their respective computers and are connected via IP address.
 
 1. **On the Remote Worker Machine:**
    - **Launch** ComfyUI with the `--listen --enable-cors-header` arguments. ⚠️ **Required!**
@@ -85,7 +95,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 - `--listen` - **Required** for remote workers
 - `--enable-cors-header` - **Required** if using remoter workers
 - `--lowvram` - For GPUs with less memory
-- `--highvram` - For GPUs with 12GB+ VRAM
+- `--highvram` - For high-end GPUs
 
 ---
 
@@ -187,12 +197,24 @@ The control centre for your distributed setup:
 - Ensure ComfyUI-Distributed is installed on remote workers
 </details>
 
+## UI Panel Settings
+
+The Distributed GPU panel includes several configuration options in the Settings section:
+
 ### Debug Mode
+- **Description**: Enable detailed logging for troubleshooting and monitoring distributed operations
+- **Default**: Disabled
+- **Usage**: When enabled, detailed debug information is logged to the browser console, including worker status updates, job distribution details, and network communication logs
 
-Enable detailed logging for troubleshooting:
+### Auto-launch Workers on Startup
+- **Description**: Automatically launch enabled local workers when ComfyUI starts
+- **Default**: Disabled  
+- **Usage**: When enabled, any local workers that are marked as "enabled" will be automatically launched in the background when the ComfyUI server starts, eliminating the need to launch each worker manually
 
-1. **UI Method**: Settings → Debug Mode → Enable
-2. **Check** console output for detailed logs
+### Stop Workers on Master Exit
+- **Description**: Automatically stop all managed local workers when the master ComfyUI instance shuts down
+- **Default**: Enabled
+- **Usage**: When enabled, ensures clean shutdown by stopping all UI-managed worker processes when the main ComfyUI server exits, preventing orphaned background processes
 
 ---
 
