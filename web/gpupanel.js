@@ -2171,18 +2171,53 @@ class DistributedExtension {
         }
         
         // Check for port conflicts
-        const portConflict = this.config.workers.some(w => 
-            w.id !== workerId && w.port === port
-        );
-        
-        if (portConflict) {
-            app.extensionManager.toast.add({
-                severity: "error",
-                summary: "Port Conflict",
-                detail: `Port ${port} is already in use by another worker`,
-                life: 3000
-            });
-            return;
+        // Remote workers can reuse ports, but local workers cannot share ports with each other or master
+        if (!isRemote) {
+            // Check if port conflicts with master
+            const masterPort = parseInt(window.location.port) || (window.location.protocol === 'https:' ? 443 : 80);
+            if (port === masterPort) {
+                app.extensionManager.toast.add({
+                    severity: "error",
+                    summary: "Port Conflict",
+                    detail: `Port ${port} is already in use by the master server`,
+                    life: 3000
+                });
+                return;
+            }
+            
+            // Check if port conflicts with other local workers
+            const localPortConflict = this.config.workers.some(w => 
+                w.id !== workerId && 
+                w.port === port && 
+                !w.host // local workers have no host or host is null
+            );
+            
+            if (localPortConflict) {
+                app.extensionManager.toast.add({
+                    severity: "error",
+                    summary: "Port Conflict",
+                    detail: `Port ${port} is already in use by another local worker`,
+                    life: 3000
+                });
+                return;
+            }
+        } else {
+            // For remote workers, only check conflicts with other workers on the same host
+            const sameHostConflict = this.config.workers.some(w => 
+                w.id !== workerId && 
+                w.port === port && 
+                w.host === host.trim()
+            );
+            
+            if (sameHostConflict) {
+                app.extensionManager.toast.add({
+                    severity: "error",
+                    summary: "Port Conflict",
+                    detail: `Port ${port} is already in use by another worker on ${host}`,
+                    life: 3000
+                });
+                return;
+            }
         }
         
         try {
