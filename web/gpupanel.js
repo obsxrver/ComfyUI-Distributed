@@ -850,20 +850,35 @@ class DistributedExtension {
             const participants = ['master', ...activeWorkers.map(w => w.id)];
 
             for (const participantId of participants) {
+                const options = { 
+                    enabled_worker_ids: activeWorkers.map(w => w.id), 
+                    workflow: promptWrapper.workflow,
+                    job_id_map: job_id_map // Pass the map of unique IDs
+                };
+                
                 const jobApiPrompt = this._prepareApiPromptForParticipant(
-                    promptWrapper.output, participantId,
-                    { 
-                        enabled_worker_ids: activeWorkers.map(w => w.id), 
-                        workflow: promptWrapper.workflow,
-                        job_id_map: job_id_map // Pass the map of unique IDs
-                    }
+                    promptWrapper.output, participantId, options
                 );
                 
                 if (participantId === 'master') {
                     jobs.push({ type: 'master', promptWrapper: { ...promptWrapper, output: jobApiPrompt } });
                 } else {
                     const worker = activeWorkers.find(w => w.id === participantId);
-                    if (worker) jobs.push({ type: 'worker', worker, prompt: jobApiPrompt, workflow: promptWrapper.workflow });
+                    if (worker) {
+                        const job = {
+                            type: 'worker',
+                            worker,
+                            prompt: jobApiPrompt,
+                            workflow: promptWrapper.workflow
+                        };
+                        
+                        // Add image references if found for remote workers
+                        if (options._imageReferences) {
+                            job.imageReferences = options._imageReferences;
+                        }
+                        
+                        jobs.push(job);
+                    }
                 }
             }
             
@@ -878,6 +893,23 @@ class DistributedExtension {
 
     async _executeJobs(jobs) {
         let masterPromptId = null;
+        
+        // Pre-load all unique images before dispatching to workers
+        const allImageReferences = new Map();
+        for (const job of jobs) {
+            if (job.type === 'worker' && job.imageReferences) {
+                for (const [filename, info] of job.imageReferences) {
+                    allImageReferences.set(filename, info);
+                }
+            }
+        }
+        
+        if (allImageReferences.size > 0) {
+            this.debugLog(`Pre-loading ${allImageReferences.size} unique image(s) for all workers`);
+            await this.loadImagesForWorker(allImageReferences);
+        }
+        
+        // Now dispatch jobs in parallel
         const promises = jobs.map(job => {
             if (job.type === 'master') {
                 return this.originalQueuePrompt(0, job.promptWrapper).then(result => {
@@ -885,7 +917,7 @@ class DistributedExtension {
                     return result;
                 });
             } else {
-                return this._dispatchToWorker(job.worker, job.prompt, job.workflow);
+                return this._dispatchToWorker(job.worker, job.prompt, job.workflow, job.imageReferences);
             }
         });
         await Promise.all(promises);
@@ -898,6 +930,36 @@ class DistributedExtension {
         return Object.entries(apiPrompt)
             .filter(([, nodeData]) => nodeData.class_type === className)
             .map(([nodeId, nodeData]) => ({ id: nodeId, data: nodeData }));
+    }
+    
+    /**
+     * Find all image references in the workflow
+     * Looks for inputs named "image" that contain filename strings
+     */
+    findImageReferences(apiPrompt) {
+        const images = new Map();
+        // Updated regex to handle:
+        // - Standard files: "image.png"
+        // - Subfolder files: "subfolder/image.png"
+        // - ComfyUI special format: "clipspace/file.png [input]"
+        const imageExtensions = /\.(png|jpg|jpeg|gif|webp|bmp)(\s*\[\w+\])?$/i;
+        
+        for (const [nodeId, node] of Object.entries(apiPrompt)) {
+            if (node.inputs && node.inputs.image) {
+                const imageValue = node.inputs.image;
+                // Check if it's a string filename (not an array connection)
+                if (typeof imageValue === 'string' && imageExtensions.test(imageValue)) {
+                    images.set(imageValue, {
+                        nodeId,
+                        nodeType: node.class_type,
+                        inputName: 'image'
+                    });
+                    this.debugLog(`Found image reference: ${imageValue} in node ${nodeId} (${node.class_type})`);
+                }
+            }
+        }
+        
+        return images;
     }
 
     /**
@@ -1005,6 +1067,24 @@ class DistributedExtension {
         // For workers, prune the workflow to only include distributed node dependencies
         if (!isMaster && allDistributedNodes.length > 0) {
             jobApiPrompt = this.pruneWorkflowForWorker(jobApiPrompt, allDistributedNodes);
+        }
+        
+        // Handle image references for remote workers
+        if (!isMaster && options.enabled_worker_ids) {
+            // Check if this is a remote worker
+            const workerId = participantId;
+            const workerInfo = this.config.workers.find(w => w.id === workerId);
+            const isRemote = workerInfo && workerInfo.host;
+            
+            if (isRemote) {
+                // Find all image references in the pruned workflow
+                const imageReferences = this.findImageReferences(jobApiPrompt);
+                if (imageReferences.size > 0) {
+                    this.debugLog(`Found ${imageReferences.size} image references for remote worker ${workerId}`);
+                    // Store image references for later processing
+                    options._imageReferences = imageReferences;
+                }
+            }
         }
         
         // Handle Distributed seed nodes
@@ -1214,9 +1294,36 @@ class DistributedExtension {
         this.updateWorkerControls(worker.id);
     }
     
-    async _dispatchToWorker(worker, prompt, workflow) {
+    async _dispatchToWorker(worker, prompt, workflow, imageReferences) {
         const host = worker.host || "localhost";
         const workerUrl = `http://${host}:${worker.port}`;
+        
+        // Debug logging - always log to console for debugging
+        console.log(`[Distributed] === Dispatching to ${worker.name} (${worker.id}) ===`);
+        console.log('[Distributed] Worker URL:', workerUrl);
+        
+        // Handle image uploads for remote workers
+        if (imageReferences && imageReferences.size > 0) {
+            if (this.debugMode) {
+                console.log(`[Distributed] Processing ${imageReferences.size} image(s) for remote worker`);
+            }
+            
+            try {
+                // Load images from master
+                const images = await this.loadImagesForWorker(imageReferences);
+                
+                // Upload images to worker
+                if (images.length > 0) {
+                    await this.uploadImagesToWorker(workerUrl, images);
+                    if (this.debugMode) {
+                        console.log(`[Distributed] Successfully uploaded ${images.length} image(s) to worker`);
+                    }
+                }
+            } catch (error) {
+                this.log(`Failed to process images for worker ${worker.name}: ${error.message}`);
+                // Continue with workflow execution even if image upload fails
+            }
+        }
         
         const promptToSend = {
             prompt,
@@ -1224,6 +1331,7 @@ class DistributedExtension {
             client_id: api.clientId
         };
         
+        console.log('[Distributed] Prompt data:', promptToSend);
         
         try {
             await fetch(`${workerUrl}/prompt`, { 
@@ -1234,6 +1342,112 @@ class DistributedExtension {
             });
         } catch (e) {
             this.log(`Failed to connect to worker ${worker.name} at ${workerUrl}: ${e.message}`);
+        }
+    }
+    
+    async loadImagesForWorker(imageReferences) {
+        const images = [];
+        
+        // Use a cache to avoid loading the same image multiple times
+        if (!this._imageCache) {
+            this._imageCache = new Map();
+        }
+        
+        for (const [filename, info] of imageReferences) {
+            try {
+                // Check cache first
+                if (this._imageCache.has(filename)) {
+                    images.push(this._imageCache.get(filename));
+                    this.debugLog(`Using cached image: ${filename}`);
+                    continue;
+                }
+                
+                // Load image from master's filesystem via API
+                const response = await fetch(`${window.location.origin}/distributed/load_image`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image_path: filename })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const imageData = {
+                        name: filename,
+                        image: data.image_data
+                    };
+                    images.push(imageData);
+                    
+                    // Cache the image for future use
+                    this._imageCache.set(filename, imageData);
+                    this.debugLog(`Loaded and cached image: ${filename}`);
+                } else {
+                    this.log(`Failed to load image ${filename}: ${response.statusText}`);
+                }
+            } catch (error) {
+                this.log(`Error loading image ${filename}: ${error.message}`);
+            }
+        }
+        
+        // Clear cache after a reasonable time to avoid memory issues
+        setTimeout(() => {
+            if (this._imageCache && this._imageCache.size > 0) {
+                this.debugLog(`Clearing image cache (${this._imageCache.size} images)`);
+                this._imageCache.clear();
+            }
+        }, 30000); // Clear after 30 seconds
+        
+        return images;
+    }
+    
+    async uploadImagesToWorker(workerUrl, images) {
+        // Upload images to worker's ComfyUI instance
+        for (const imageData of images) {
+            const formData = new FormData();
+            
+            // Convert base64 to blob
+            const base64Data = imageData.image.replace(/^data:image\/\w+;base64,/, '');
+            const byteCharacters = atob(base64Data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: 'image/png' });
+            
+            // Clean the filename - remove [input] suffix and handle subfolder
+            let cleanName = imageData.name;
+            let subfolder = '';
+            
+            // Remove [input] or other suffixes
+            cleanName = cleanName.replace(/\s*\[\w+\]$/, '');
+            
+            // Extract subfolder if present
+            if (cleanName.includes('/')) {
+                const parts = cleanName.split('/');
+                subfolder = parts.slice(0, -1).join('/');
+                cleanName = parts[parts.length - 1];
+            }
+            
+            formData.append('image', blob, cleanName);
+            formData.append('type', 'input');
+            formData.append('subfolder', subfolder);
+            formData.append('overwrite', 'true');
+            
+            try {
+                const response = await fetch(`${workerUrl}/upload/image`, {
+                    method: 'POST',
+                    mode: 'cors',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Upload failed: ${response.statusText}`);
+                }
+                
+                this.debugLog(`Uploaded image to worker: ${imageData.name} -> ${subfolder}/${cleanName}`);
+            } catch (error) {
+                throw new Error(`Failed to upload ${imageData.name}: ${error.message}`);
+            }
         }
     }
     

@@ -1132,6 +1132,46 @@ if not hasattr(prompt_server, 'distributed_pending_jobs'):
     prompt_server.distributed_pending_jobs = {}
     prompt_server.distributed_jobs_lock = asyncio.Lock()
 
+@server.PromptServer.instance.routes.post("/distributed/load_image")
+async def load_image_endpoint(request):
+    """Load an image file and return it as base64 data."""
+    try:
+        data = await request.json()
+        image_path = data.get("image_path")
+        
+        if not image_path:
+            return await handle_api_error(request, "Missing image_path", 400)
+        
+        import folder_paths
+        import base64
+        from PIL import Image
+        import io
+        
+        # Use ComfyUI's folder paths to find the image
+        full_path = folder_paths.get_annotated_filepath(image_path)
+        
+        if not os.path.exists(full_path):
+            return await handle_api_error(request, f"Image not found: {image_path}", 404)
+        
+        # Load and convert to base64
+        with Image.open(full_path) as img:
+            # Convert to RGB if needed
+            if img.mode not in ('RGB', 'RGBA'):
+                img = img.convert('RGB')
+            
+            # Save to bytes
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG', compress_level=1)  # Fast compression
+            img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        return web.json_response({
+            "status": "success",
+            "image_data": f"data:image/png;base64,{img_base64}"
+        })
+        
+    except Exception as e:
+        return await handle_api_error(request, e, 500)
+
 @server.PromptServer.instance.routes.post("/distributed/job_complete")
 async def job_complete_endpoint(request):
     try:
