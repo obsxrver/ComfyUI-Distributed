@@ -58,7 +58,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 ### Adding Remote Workers
 
 1. **On the Remote Worker Machine:**
-   - **Launch** ComfyUI with the `--listen` argument. ⚠️ **Required!**
+   - **Launch** ComfyUI with the `--listen --enable-cors-header` arguments. ⚠️ **Required!**
    - **Add** workers in the UI panel if the remote machine has more than one GPU.
       - Make sure that they also have `--listen` set in `Extra Args`.
       - Then launch them.
