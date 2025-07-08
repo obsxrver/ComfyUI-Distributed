@@ -10,16 +10,16 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 
 ## Key Features
 
-### Parallel Workflow Processing
+#### Parallel Workflow Processing
 - **Parallel Generation** - Run the same workflow on multiple GPUs simultaneously with different seeds
 - **Automatic Load Balancing** - Distribute workflow execution across available workers
 - **Batch Acceleration** - Generate multiple variations faster by using all your GPUs
 
-### Distributed Upscaling
+#### Distributed Upscaling
 - **True Distributed Processing** - Split large upscaling tasks into tiles processed across multiple GPUs
 - **Tile-based Upscaling** - Intelligent work distribution for Ultimate SD Upscale
 
-### Management & Monitoring
+#### Management & Monitoring
 - **Automatic Worker Management** - Launch and monitor workers from the UI
 - **Network Support** - Use GPUs across different machines on your network
 - **Real-time Monitoring** - Track worker status and performance from the UI
