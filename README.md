@@ -36,7 +36,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
    git clone https://github.com/yourusername/ComfyUI-Distributed.git
    ```
 
-2. **Restart ComfyUI** - the extension will create a default configuration file on first load
+2. **Restart ComfyUI** - add '--enable-cors-header` to your launch argumenets
 
 ---
 
