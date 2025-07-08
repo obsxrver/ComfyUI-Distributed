@@ -10,7 +10,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 
 ## Features
 
-- **Distributed Processing** - Split workloads across multiple GPUs automatically
+- **Distributed Processing** - Multiply your workflows across multiple GPUs automatically
 - **Distributed Upscaling** - Tile-based upscaling with intelligent work distribution
 - **Automatic Worker Management** - Launch and monitor workers from the UI
 - **Network Support** - Use GPUs across different machines on your network
@@ -23,8 +23,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 ## Requirements
 
 - ComfyUI installation
-- PyTorch with CUDA support
-- Python 3.8+
+- That's it
 
 ---
 
@@ -36,7 +35,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
    git clone https://github.com/yourusername/ComfyUI-Distributed.git
    ```
 
-2. **Restart ComfyUI** - If you will be using remote workers, add `--enable-cors-header` to your launch arguments
+2. **Restart ComfyUI** - If you'll be using remote workers, add `--enable-cors-header` to your launch arguments
 
 ---
 
@@ -83,8 +82,9 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 | **Extra Args** | Additional ComfyUI arguments | See below |
 
 **Common Extra Args:**
-- `--lowvram` - For GPUs with less memory
 - `--listen` - **Required** for remote workers
+- `--enable-cors-header` - **Required** if using remoter workers
+- `--lowvram` - For GPUs with less memory
 - `--highvram` - For GPUs with 12GB+ VRAM
 
 ---
@@ -97,18 +97,18 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 **Usage**: Place after any image generation node to enable distributed processing. Works automatically when workers are enabled.
 
 ### Distributed Seed
-> Ensures unique seeds across distributed workers for varied generation
+> Ensures unique seeds across distributed workers for varied generations
 
-**Usage**: Connect to any seed input. Each worker automatically receives an offset seed for variety.
+**Usage**: Connect to any seed input. Each worker automatically receives an offset seed to ensure randomisation. Alternatively, you can connect a seed node directly to this node's seed input, which will automatically handle seed offsetting across all workers.
 
 ### Ultimate SD Upscale Distributed
-> Distributed version of Ultimate SD Upscale that processes tiles across multiple GPUs
+> Distributed version of Ultimate SD Upscale that processes tiles across multiple GPUs, making upscaling much faster
 
 **Usage**:
 1. Upscale your image with a regular upscale model (ESRGAN, etc.)
 2. Feed the upscaled image into this node
 3. Configure tile settings
-4. Enable workers for faster processing
+4. Enable workers for fast processing
 
 ---
 
@@ -116,7 +116,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 
 ### Distributed GPU Panel
 
-The control center for your distributed setup:
+The control centre for your distributed setup:
 
 | Feature | Description |
 |---------|-------------|
@@ -174,8 +174,8 @@ The control center for your distributed setup:
 <details>
 <summary><b>Images not combining properly</b></summary>
 
-- Ensure all workers have the same models loaded
-- Check that custom nodes are installed on all workers
+- Ensure all remote workers have the same models available
+- Check that custom nodes are installed on all remote workers
 </details>
 
 <details>
