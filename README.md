@@ -10,7 +10,7 @@ A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) th
 
 ## Features
 
-- **Distributed Processing** - Multiply your workflows across multiple GPUs automatically
+- **Parallel Processing** - Multiply your workflows across GPUs automatically
 - **Distributed Upscaling** - Tile-based upscaling with intelligent work distribution
 - **Automatic Worker Management** - Launch and monitor workers from the UI
 - **Network Support** - Use GPUs across different machines on your network
