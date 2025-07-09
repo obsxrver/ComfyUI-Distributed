@@ -229,3 +229,4 @@ This project is under active development. Contributions are welcome!
 - [ ] Remote worker control via SSH
 - [ ] View remote worker logs in UI
 - [ ] Improve worker timeout logic
+- [ ] Support for Runpod workers
