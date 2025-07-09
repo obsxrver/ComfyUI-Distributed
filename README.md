@@ -85,6 +85,18 @@ A powerful extension for ComfyUI that enables parallel and distributed processin
      - **Host**: The remote worker's IP address.
      - **Port**: The port number used when launching ComfyUI on the remote worker (e.g., 8189).
    - **Save** the remote worker configuration.
+  
+<details>
+<summary><strong>💡 Tip: Using GPUs Outside Your Local Network</strong></summary>
+
+Services like [Tailscale](https://tailscale.com) create secure VPN connections that make remote computers appear as if they're on your local network. This lets you use GPUs from:
+- **Other locations** (work computer, friend's gaming PC, etc.)
+- **Cloud instances** (AWS, Google Cloud, etc.) 
+- **Any internet-connected machine** with CUDA GPUs
+
+Just install Tailscale on both machines and use the Tailscale IP address as the "Host" when configuring your remote worker.
+
+</details>
 
 ### Configuration Tips
 
