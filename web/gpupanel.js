@@ -258,6 +258,8 @@ class DistributedExtension {
 
     async _handleClearMemory(button) {
         const originalText = button.textContent;
+        const originalStyle = button.style.cssText; // Store complete original styling
+        
         button.textContent = "Clearing...";
         button.disabled = true;
         
@@ -269,10 +271,12 @@ class DistributedExtension {
             
             if (urlsToClear.length === 0) {
                 button.textContent = "No Workers";
-                button.style.backgroundColor = DistributedExtension.BUTTON_STYLES.error.split(':')[1].trim().replace(';', '');
+                // Preserve original cssText but update background color
+                button.style.cssText = originalStyle.replace(/background-color:[^;]*;?/, '') + ' background-color: #c04c4c;';
                 setTimeout(() => {
                     button.textContent = originalText;
-                    button.style.cssText = DistributedExtension.BUTTON_STYLES.base + DistributedExtension.BUTTON_STYLES.clearMemory;
+                    button.style.cssText = originalStyle; // Restore complete original styling
+                    button.disabled = false;
                 }, 3000);
                 return;
             }
@@ -291,19 +295,31 @@ class DistributedExtension {
             
             if (failures.length === 0) {
                 button.textContent = "Success!";
-                button.style.backgroundColor = DistributedExtension.BUTTON_STYLES.success.split(':')[1].trim().replace(';', '');
+                // Preserve original cssText but update background color
+                button.style.cssText = originalStyle.replace(/background-color:[^;]*;?/, '') + ' background-color: #3ca03c;';
             } else {
                 button.textContent = "Error! See Console";
-                button.style.backgroundColor = DistributedExtension.BUTTON_STYLES.error.split(':')[1].trim().replace(';', '');
+                // Preserve original cssText but update background color  
+                button.style.cssText = originalStyle.replace(/background-color:[^;]*;?/, '') + ' background-color: #c04c4c;';
                 this.log("Failed to clear memory on: " + failures.map(f => f.name).join(", "));
             }
             
             setTimeout(() => {
                 button.textContent = originalText;
-                button.style.cssText = DistributedExtension.BUTTON_STYLES.base + DistributedExtension.BUTTON_STYLES.clearMemory;
+                button.style.cssText = originalStyle; // Restore complete original styling
+                button.disabled = false;
             }, 3000);
-        } finally {
-            button.disabled = false;
+        } catch (error) {
+            // Handle any unexpected errors
+            button.textContent = "Error! See Console";
+            button.style.cssText = originalStyle.replace(/background-color:[^;]*;?/, '') + ' background-color: #c04c4c;';
+            this.log("Unexpected error in clear memory: " + error.message);
+            
+            setTimeout(() => {
+                button.textContent = originalText;
+                button.style.cssText = originalStyle;
+                button.disabled = false;
+            }, 3000);
         }
     }
 
