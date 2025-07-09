@@ -33,6 +33,7 @@ A powerful extension for ComfyUI that enables parallel and distributed processin
 ## Requirements
 
 - ComfyUI installation
+- Multiple GPUs
 - That's it
 
 ---
