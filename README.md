@@ -4,7 +4,7 @@
 
 > **Supercharge your ComfyUI workflows with multi-GPU processing**
 
-A powerful extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that enables parallel and distributed processing across multiple GPUs and machines. Speed up your image generation and upscaling workflows by leveraging all available GPU resources in your network.
+A powerful extension for ComfyUI that enables parallel and distributed processing across multiple GPUs and machines. Speed up your image generation and upscaling workflows by leveraging all available GPU resources in your network.
 
 📺 [Watch the Tutorial](https://www.youtube.com/watch?v=p6eE3IlAbOs)
 
