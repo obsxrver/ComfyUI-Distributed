@@ -238,3 +238,4 @@ This project is under active development. Contributions are welcome!
 - [ ] View remote worker logs in UI
 - [ ] Improve worker timeout logic
 - [ ] Support for Runpod workers
+- [ ] ComfyUI Desktop app compatibility
