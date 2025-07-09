@@ -42,8 +42,7 @@ A powerful extension for ComfyUI that enables parallel and distributed processin
 
 1. **Clone this repository** into your ComfyUI custom nodes directory:
    ```bash
-   cd ComfyUI/custom_nodes
-   git clone https://github.com/yourusername/ComfyUI-Distributed.git
+   git clone https://github.com/robertvoy/ComfyUI-Distributed.git
    ```
 
 2. **Restart ComfyUI** - If you'll be using remote workers, add `--enable-cors-header` to your launch arguments
