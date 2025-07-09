@@ -66,6 +66,7 @@ A powerful extension for ComfyUI that enables parallel and distributed processin
 4. **Save** and optionally launch the local worker.
 
 ### Adding Remote Workers
+📺 [Watch the Tutorial](https://www.youtube.com/watch?v=p6eE3IlAbOs)
 
 > Remote Workers: ComfyUI instances running on completely different computers on your network. These allow you to harness GPU power from other machines. Remote workers must be manually started on their respective computers and are connected via IP address.
 
