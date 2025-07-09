@@ -201,6 +201,12 @@ The control centre for your distributed setup:
 - Ensure ComfyUI-Distributed is installed on remote workers
 </details>
 
+<details>
+<summary><b>Custom validation failed for node: image - Invalid image file</b></summary>
+   
+- Add `--enable-cors-header` to your launch argument, on both master and remote worker
+</details>
+
 ## UI Panel Settings
 
 The Distributed GPU panel includes several configuration options in the Settings section:
