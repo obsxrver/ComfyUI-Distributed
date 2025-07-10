@@ -756,7 +756,7 @@ class DistributedExtension {
         
         const autoLaunchLabel = document.createElement("label");
         autoLaunchLabel.htmlFor = "setting-auto-launch";
-        autoLaunchLabel.textContent = "Auto-launch Workers on Startup";
+        autoLaunchLabel.textContent = "Auto-launch Local Workers on Startup";
         autoLaunchLabel.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
         
         autoLaunchGroup.appendChild(autoLaunchCheckbox);
@@ -774,7 +774,7 @@ class DistributedExtension {
         
         const stopOnExitLabel = document.createElement("label");
         stopOnExitLabel.htmlFor = "setting-stop-on-exit";
-        stopOnExitLabel.textContent = "Stop Workers on Master Exit";
+        stopOnExitLabel.textContent = "Stop Local Workers on Master Exit";
         stopOnExitLabel.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
         
         stopOnExitGroup.appendChild(stopOnExitCheckbox);
