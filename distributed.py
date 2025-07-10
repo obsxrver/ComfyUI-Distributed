@@ -607,12 +607,57 @@ class WorkerProcessManager:
         
     def find_comfy_root(self):
         """Find the ComfyUI root directory."""
-        # Start from current file location and go up
+        # Start from current file location
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        # This file is in ComfyUI/custom_nodes/ComfyUI-Distributed/
-        # So go up two levels to get to ComfyUI root
-        comfy_root = os.path.dirname(os.path.dirname(current_dir))
-        return comfy_root
+        
+        # Method 1: Check for environment variable override
+        env_root = os.environ.get('COMFYUI_ROOT')
+        if env_root and os.path.exists(os.path.join(env_root, "main.py")):
+            debug_log(f"Found ComfyUI root via COMFYUI_ROOT environment variable: {env_root}")
+            return env_root
+        
+        # Method 2: Try going up from custom_nodes directory
+        # This file should be in ComfyUI/custom_nodes/ComfyUI-Distributed/
+        potential_root = os.path.dirname(os.path.dirname(current_dir))
+        if os.path.exists(os.path.join(potential_root, "main.py")):
+            debug_log(f"Found ComfyUI root via directory traversal: {potential_root}")
+            return potential_root
+        
+        # Method 3: Look for common Docker paths
+        docker_paths = ["/basedir", "/ComfyUI", "/app", "/workspace/ComfyUI", "/comfyui", "/opt/ComfyUI", "/workspace"]
+        for path in docker_paths:
+            if os.path.exists(path) and os.path.exists(os.path.join(path, "main.py")):
+                debug_log(f"Found ComfyUI root in Docker path: {path}")
+                return path
+        
+        # Method 4: Search upwards for main.py
+        search_dir = current_dir
+        for _ in range(5):  # Limit search depth
+            if os.path.exists(os.path.join(search_dir, "main.py")):
+                debug_log(f"Found ComfyUI root via upward search: {search_dir}")
+                return search_dir
+            parent = os.path.dirname(search_dir)
+            if parent == search_dir:  # Reached root
+                break
+            search_dir = parent
+        
+        # Method 5: Try to import and use folder_paths
+        try:
+            import folder_paths
+            # folder_paths.base_path should point to ComfyUI root
+            if hasattr(folder_paths, 'base_path') and os.path.exists(os.path.join(folder_paths.base_path, "main.py")):
+                debug_log(f"Found ComfyUI root via folder_paths: {folder_paths.base_path}")
+                return folder_paths.base_path
+        except:
+            pass
+        
+        # If all methods fail, log detailed information and return the best guess
+        log(f"Warning: Could not reliably determine ComfyUI root directory")
+        log(f"Current directory: {current_dir}")
+        log(f"Initial guess was: {potential_root}")
+        
+        # Return the initial guess as fallback
+        return potential_root
         
     def _find_windows_terminal(self):
         """Find Windows Terminal executable."""
@@ -655,8 +700,28 @@ class WorkerProcessManager:
             ]
             debug_log(f"Using main.py: {main_py}")
         else:
-            # Fallback error
-            raise RuntimeError(f"Could not find main.py in {comfy_root}")
+            # Provide detailed error message
+            error_msg = f"Could not find main.py in {comfy_root}\n"
+            error_msg += f"Searched for: {main_py}\n"
+            error_msg += f"Directory contents of {comfy_root}:\n"
+            try:
+                if os.path.exists(comfy_root):
+                    files = os.listdir(comfy_root)[:20]  # List first 20 files
+                    error_msg += "  " + "\n  ".join(files)
+                    if len(os.listdir(comfy_root)) > 20:
+                        error_msg += f"\n  ... and {len(os.listdir(comfy_root)) - 20} more files"
+                else:
+                    error_msg += f"  Directory {comfy_root} does not exist!"
+            except Exception as e:
+                error_msg += f"  Error listing directory: {e}"
+            
+            # Try to suggest the correct path
+            error_msg += "\n\nPossible solutions:\n"
+            error_msg += "1. Check if ComfyUI is installed in a different location\n"
+            error_msg += "2. For Docker: ComfyUI might be in /ComfyUI or /app\n"
+            error_msg += "3. Ensure the custom node is installed in the correct location\n"
+            
+            raise RuntimeError(error_msg)
         
         # Add any extra arguments
         if worker_config.get('extra_args'):
