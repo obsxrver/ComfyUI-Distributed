@@ -1037,6 +1037,39 @@ class DistributedExtension {
     }
 
     /**
+     * Find only upstream nodes (inputs) for distributed collector nodes
+     * This is used for workers to avoid executing downstream nodes like SaveImage
+     * @param {Object} apiPrompt - The API prompt containing the workflow
+     * @param {Array<string>} collectorIds - Array of collector node IDs
+     * @returns {Set<string>} Set of node IDs that feed into collectors
+     */
+    findCollectorUpstreamNodes(apiPrompt, collectorIds) {
+        const connected = new Set(collectorIds); // Include all collectors
+        const toProcess = [...collectorIds];
+        
+        // Only traverse upstream (inputs)
+        while (toProcess.length > 0) {
+            const nodeId = toProcess.pop();
+            const node = apiPrompt[nodeId];
+            
+            // Traverse upstream (inputs) only
+            if (node && node.inputs) {
+                for (const [inputName, inputValue] of Object.entries(node.inputs)) {
+                    if (Array.isArray(inputValue) && inputValue.length === 2) {
+                        const sourceNodeId = String(inputValue[0]);
+                        if (!connected.has(sourceNodeId)) {
+                            connected.add(sourceNodeId);
+                            toProcess.push(sourceNodeId);
+                        }
+                    }
+                }
+            }
+        }
+        
+        return connected;
+    }
+
+    /**
      * Prune workflow to only include nodes connected to distributed nodes
      * @param {Object} apiPrompt - The full workflow API prompt
      * @param {Array} distributedNodes - Array of distributed nodes (optional, will find if not provided)
@@ -1055,9 +1088,11 @@ class DistributedExtension {
             return apiPrompt;
         }
         
-        // Get all nodes connected to distributed nodes (both upstream and downstream)
+        // Get all nodes connected to distributed nodes
         const distributedIds = distributedNodes.map(node => node.id);
-        const connectedNodes = this.findCollectorConnectedNodes(apiPrompt, distributedIds);
+        
+        // For workers, only include upstream nodes to prevent downstream execution
+        const connectedNodes = this.findCollectorUpstreamNodes(apiPrompt, distributedIds);
         
         this.debugLog(`Pruning workflow: keeping ${connectedNodes.size} of ${Object.keys(apiPrompt).length} nodes`);
         
@@ -1065,6 +1100,46 @@ class DistributedExtension {
         const prunedPrompt = {};
         for (const nodeId of connectedNodes) {
             prunedPrompt[nodeId] = JSON.parse(JSON.stringify(apiPrompt[nodeId]));
+        }
+        
+        // Check if any distributed node has downstream SaveImage nodes that were removed
+        // If so, add a PreviewImage node after the collector
+        for (const distNode of distributedNodes) {
+            const distNodeId = distNode.id;
+            
+            // Check if this distributed node had any downstream nodes in the original workflow
+            const originalOutputMap = new Map();
+            for (const [nodeId, node] of Object.entries(apiPrompt)) {
+                if (node.inputs) {
+                    for (const [inputName, inputValue] of Object.entries(node.inputs)) {
+                        if (Array.isArray(inputValue) && inputValue.length === 2 && String(inputValue[0]) === distNodeId) {
+                            if (!originalOutputMap.has(distNodeId)) {
+                                originalOutputMap.set(distNodeId, []);
+                            }
+                            originalOutputMap.get(distNodeId).push({nodeId, inputName});
+                        }
+                    }
+                }
+            }
+            
+            // If this distributed node had downstream nodes that were removed, add a PreviewImage
+            if (originalOutputMap.has(distNodeId) && originalOutputMap.get(distNodeId).length > 0) {
+                // Generate a unique ID for the preview node
+                const previewNodeId = `preview_${distNodeId}`;
+                
+                // Add PreviewImage node connected to the distributed node
+                prunedPrompt[previewNodeId] = {
+                    inputs: {
+                        images: [distNodeId, 0]  // Connect to first output of distributed node
+                    },
+                    class_type: "PreviewImage",
+                    _meta: {
+                        title: "Preview Image (auto-added)"
+                    }
+                };
+                
+                this.debugLog(`Added PreviewImage node ${previewNodeId} after distributed node ${distNodeId} for worker`);
+            }
         }
         
         return prunedPrompt;
