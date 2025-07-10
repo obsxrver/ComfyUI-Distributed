@@ -219,6 +219,15 @@ The control centre for your distributed setup:
 - Add `--enable-cors-header` to your launch argument, on both master and remote worker
 </details>
 
+<details>
+<summary><b>"Could not find main.py in /basedir" error when using Docker</b></summary>
+
+- If you are running a worker in a Docker container (e.g., using `mmartial/comfyui-nvidia-docker`), you might encounter an error indicating `main.py` cannot be found in `/basedir`, preventing the worker from launching or finding custom nodes.
+- **Solution**: Add the following flags to the "Extra Args" field when configuring the worker in the ComfyUI-Distributed UI:
+  `--base-dir /basedir --enable-cors-header --listen 0.0.0.0`
+  This ensures that the base directory within the Docker container is correctly set, allowing ComfyUI to locate its necessary files and custom nodes.
+</details>
+
 ## UI Panel Settings
 
 The Distributed GPU panel includes several configuration options in the Settings section:
