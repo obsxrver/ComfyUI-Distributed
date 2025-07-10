@@ -211,7 +211,7 @@ class DistributedExtension {
         try {
             const targetsToInterrupt = this.enabledWorkers.map(w => ({ 
                 name: w.name, 
-                url: `http://${w.host || "localhost"}:${w.port}` 
+                url: `http://${w.host || window.location.hostname}:${w.port}` 
             }));
             
             if (targetsToInterrupt.length === 0) {
@@ -1317,12 +1317,15 @@ class DistributedExtension {
         if (!this.config || !this.config.workers) return;
         
         for (const worker of this.config.workers) {
-            this.checkWorkerStatus(worker);
+            // Only check status for enabled workers
+            if (worker.enabled) {
+                this.checkWorkerStatus(worker);
+            }
         }
     }
     
     async checkWorkerStatus(worker) {
-        const host = worker.host || "localhost";
+        const host = worker.host || window.location.hostname;
         const url = `http://${host}:${worker.port}/prompt`;
         const statusDot = document.getElementById(`status-${worker.id}`);
         
@@ -1386,7 +1389,7 @@ class DistributedExtension {
     }
     
     async _dispatchToWorker(worker, prompt, workflow, imageReferences) {
-        const host = worker.host || "localhost";
+        const host = worker.host || window.location.hostname;
         const workerUrl = `http://${host}:${worker.port}`;
         
         // Debug logging - always log to console for debugging
@@ -1549,7 +1552,7 @@ class DistributedExtension {
         const startTime = Date.now();
         
         const checkPromises = workers.map(async (worker) => {
-            const host = worker.host || "localhost";
+            const host = worker.host || window.location.hostname;
             const url = `http://${host}:${worker.port}/prompt`;
             try {
                 const response = await fetch(url, {
@@ -1598,9 +1601,10 @@ class DistributedExtension {
         this.updateStatusDot(workerId, "#f0ad4e", "Launching...", true);
         this.launchingWorkers.add(workerId);
 
+        // Allow 90 seconds for worker to launch (model loading can take time)
         setTimeout(() => {
             this.launchingWorkers.delete(workerId);
-        }, 15000);
+        }, 90000);
 
         if (!launchBtn) return;
 
@@ -2164,7 +2168,7 @@ class DistributedExtension {
     }
     
     isRemoteWorker(worker) {
-        const host = worker.host || "localhost";
+        const host = worker.host || window.location.hostname;
         return host !== "localhost" && host !== "127.0.0.1" && host !== window.location.hostname;
     }
     
@@ -2439,7 +2443,7 @@ class DistributedExtension {
         // Get form values
         const name = document.getElementById(`name-${workerId}`).value;
         const isRemote = document.getElementById(`remote-${workerId}`).checked;
-        const host = isRemote ? document.getElementById(`host-${workerId}`).value : "localhost";
+        const host = isRemote ? document.getElementById(`host-${workerId}`).value : window.location.hostname;
         const port = parseInt(document.getElementById(`port-${workerId}`).value);
         const cudaDevice = isRemote ? undefined : parseInt(document.getElementById(`cuda-${workerId}`).value);
         const extraArgs = isRemote ? undefined : document.getElementById(`args-${workerId}`).value;
