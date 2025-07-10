@@ -1326,16 +1326,28 @@ class DistributedExtension {
     
     async checkWorkerStatus(worker) {
         const host = worker.host || window.location.hostname;
-        const url = `http://${host}:${worker.port}/prompt`;
-        const statusDot = document.getElementById(`status-${worker.id}`);
         
-        // Status dot will be updated when response comes back
+        // Detect if we should use HTTPS based on hostname or port
+        const useHttps = host.includes('trycloudflare.com') || 
+                         host.includes('ngrok') || 
+                         host.includes('.ts.net') ||
+                         worker.port === 443;
+        
+        const protocol = useHttps ? 'https' : 'http';
+        
+        // Don't add port for standard HTTPS/HTTP ports
+        const defaultPort = useHttps ? 443 : 80;
+        const port = worker.port === defaultPort ? '' : `:${worker.port}`;
+        
+        const url = `${protocol}://${host}${port}/prompt`;
+        
+        const statusDot = document.getElementById(`status-${worker.id}`);
         
         try {
             const response = await fetch(url, {
                 method: 'GET',
                 mode: 'cors',
-                signal: AbortSignal.timeout(300) // 300ms for faster response
+                signal: AbortSignal.timeout(900) // Use your increased timeout
             });
             
             if (response.ok) {
@@ -1360,8 +1372,6 @@ class DistributedExtension {
                 // Clear launching state since worker is now online
                 if (this.launchingWorkers.has(worker.id)) {
                     this.launchingWorkers.delete(worker.id);
-                    
-                    // Also clear launching flag in backend
                     this.clearLaunchingFlag(worker.id);
                 }
             } else {
@@ -1382,6 +1392,8 @@ class DistributedExtension {
                 // Only update to red if not currently launching
                 this.updateStatusDot(worker.id, "#c04c4c", "Offline - Cannot connect", false);
             }
+            
+            this.debugLog(`Worker ${worker.id} status check failed: ${error.message}`);
         }
         
         // Update control buttons based on new status
@@ -1389,8 +1401,21 @@ class DistributedExtension {
     }
     
     async _dispatchToWorker(worker, prompt, workflow, imageReferences) {
-        const host = worker.host || window.location.hostname;
-        const workerUrl = `http://${host}:${worker.port}`;
+        const host = worker.host || "localhost";
+        
+        // Detect if we should use HTTPS based on hostname or port  
+        const useHttps = host.includes('trycloudflare.com') || 
+                         host.includes('ngrok') || 
+                         host.includes('.ts.net') ||
+                         worker.port === 443;
+        
+        const protocol = useHttps ? 'https' : 'http';
+        
+        // Don't add port for standard HTTPS/HTTP ports
+        const defaultPort = useHttps ? 443 : 80;
+        const port = worker.port === defaultPort ? '' : `:${worker.port}`;
+        
+        const workerUrl = `${protocol}://${host}${port}`;
         
         // Debug logging - always log to console for debugging
         console.log(`[Distributed] === Dispatching to ${worker.name} (${worker.id}) ===`);
@@ -1421,7 +1446,7 @@ class DistributedExtension {
         
         const promptToSend = {
             prompt,
-            extra_data: { },  // Removed workflow from extra_pnginfo to reduce payload size
+            extra_data: { extra_pnginfo: { workflow } },
             client_id: api.clientId
         };
         
@@ -1552,13 +1577,29 @@ class DistributedExtension {
         const startTime = Date.now();
         
         const checkPromises = workers.map(async (worker) => {
-            const host = worker.host || window.location.hostname;
-            const url = `http://${host}:${worker.port}/prompt`;
+            const host = worker.host || "localhost";
+            
+            // Detect if we should use HTTPS based on hostname or port
+            const useHttps = host.includes('trycloudflare.com') || 
+                             host.includes('ngrok') || 
+                             host.includes('.ts.net') ||
+                             worker.port === 443;
+            
+            const protocol = useHttps ? 'https' : 'http';
+            
+            // Don't add port for standard HTTPS/HTTP ports
+            const defaultPort = useHttps ? 443 : 80;
+            const port = worker.port === defaultPort ? '' : `:${worker.port}`;
+            
+            const url = `${protocol}://${host}${port}/prompt`;
+            
+            this.debugLog(`Pre-flight checking ${worker.name} at: ${url}`);
+            
             try {
                 const response = await fetch(url, {
                     method: 'GET',
                     mode: 'cors',
-                    signal: AbortSignal.timeout(300) // 300ms timeout for pre-flight
+                    signal: AbortSignal.timeout(900) // Use your increased timeout
                 });
                 
                 if (response.ok) {
@@ -1569,7 +1610,7 @@ class DistributedExtension {
                     return { worker, active: false };
                 }
             } catch (error) {
-                this.debugLog(`Worker ${worker.name} is offline or unreachable`);
+                this.debugLog(`Worker ${worker.name} is offline or unreachable: ${error.message}`);
                 return { worker, active: false };
             }
         });
@@ -1593,7 +1634,6 @@ class DistributedExtension {
         
         return activeWorkers;
     }
-    
     async launchWorker(workerId) {
         const worker = this.config.workers.find(w => w.id === workerId);
         const launchBtn = document.querySelector(`#controls-${workerId} button`);
@@ -2175,7 +2215,13 @@ class DistributedExtension {
     getMasterUrl() {
         // Always use the detected/configured master IP for consistency
         if (this.config?.master?.host) {
-            return `http://${this.config.master.host}:${window.location.port}`;
+            const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+            // For standard ports, don't include them in the URL
+            if ((window.location.protocol === 'https:' && port === '443') || 
+                (window.location.protocol === 'http:' && port === '80')) {
+                return `${window.location.protocol}//${this.config.master.host}`;
+            }
+            return `${window.location.protocol}//${this.config.master.host}:${port}`;
         }
         
         // If no master IP is set but we're on a network address, use it
@@ -2469,7 +2515,7 @@ class DistributedExtension {
             return;
         }
         
-        if (isNaN(port) || port < 1024 || port > 65535) {
+        if (isNaN(port) || port < 1 || port > 65535) {
             app.extensionManager.toast.add({
                 severity: "error",
                 summary: "Validation Error",

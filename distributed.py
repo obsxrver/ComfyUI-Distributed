@@ -1338,10 +1338,20 @@ class DistributedCollectorNode:
 
         try:
             session = await get_client_session()
-            async with session.post(f"{master_url}/distributed/job_complete", data=data) as response:
+            url = f"{master_url}/distributed/job_complete"
+            debug_log(f"Worker - Sending image to URL: {url}")
+            # Disable SSL verification for HTTPS URLs (temporary fix for tunnels)
+            ssl_context = None
+            if url.startswith('https://'):
+                import ssl
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+            async with session.post(url, data=data, ssl=ssl_context) as response:
                 response.raise_for_status()
         except Exception as e:
             log(f"Worker - Failed to send image {image_index+1} to master: {e}")
+            debug_log(f"Worker - Full error details: URL={master_url}/distributed/job_complete")
 
     async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id=""):
         if is_worker:
