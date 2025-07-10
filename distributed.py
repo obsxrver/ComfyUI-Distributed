@@ -1536,7 +1536,7 @@ class DistributedSeed:
         return {
             "required": {
                 "seed": ("INT", {
-                    "default": 0, 
+                    "default": 1125899906842, 
                     "min": 0,
                     "max": 1125899906842624,
                     "forceInput": False  # Widget by default, can be converted to input
