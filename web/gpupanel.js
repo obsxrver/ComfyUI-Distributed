@@ -1091,10 +1091,10 @@ class DistributedExtension {
         // Get all nodes connected to distributed nodes
         const distributedIds = distributedNodes.map(node => node.id);
         
-        // For workers, only include upstream nodes to prevent downstream execution
+        // For workers, only include upstream nodes (this removes ALL downstream nodes after collectors)
         const connectedNodes = this.findCollectorUpstreamNodes(apiPrompt, distributedIds);
         
-        this.debugLog(`Pruning workflow: keeping ${connectedNodes.size} of ${Object.keys(apiPrompt).length} nodes`);
+        this.debugLog(`Pruning workflow: keeping ${connectedNodes.size} of ${Object.keys(apiPrompt).length} nodes (removed all downstream nodes)`);
         
         // Create pruned prompt with only required nodes
         const prunedPrompt = {};
@@ -1418,7 +1418,7 @@ class DistributedExtension {
         
         const promptToSend = {
             prompt,
-            extra_data: { extra_pnginfo: { workflow } },
+            extra_data: { },  // Removed workflow from extra_pnginfo to reduce payload size
             client_id: api.clientId
         };
         
