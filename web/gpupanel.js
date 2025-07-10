@@ -2668,7 +2668,7 @@ class DistributedExtension {
             name: `Worker ${this.config.workers.length + 1}`,
             port: nextPort,
             cuda_device: this.config.workers.length,
-            enabled: false,
+            enabled: true,  // Default to enabled for convenience
             extra_args: ""
         };
         
