@@ -65,12 +65,17 @@ class DistributedExtension {
     constructor() {
         this.config = null;
         this.originalQueuePrompt = api.queuePrompt.bind(api);
-        this.workerStatuses = new Map(); // Track worker statuses
-        this.managedWorkers = new Map(); // Track UI-managed workers
         this.statusCheckInterval = null;
-        this.logAutoRefreshInterval = null; // Track log auto-refresh
-        this.launchingWorkers = new Set(); // Track workers currently launching
-        this.expandedWorkers = new Set(); // Track which workers have expanded settings
+        this.logAutoRefreshInterval = null;
+        
+        // Initialize centralized state
+        this.state = this._createStateManager();
+        
+        // Initialize UI component factory
+        this.ui = this._createUIFactory();
+        
+        // Initialize API client
+        this.api = this._createApiClient();
 
         // Inject CSS for pulsing animation
         this.injectStyles();
@@ -95,6 +100,563 @@ class DistributedExtension {
     log(message) {
         console.log(`[Distributed] ${message}`);
     }
+    
+    // --- UI Component Factory ---
+    _createUIFactory() {
+        const styles = {
+            statusDot: "display: inline-block; width: 8px; height: 8px; border-radius: 50%;",
+            controlsDiv: "padding: 0 8px 6px 8px; display: flex; gap: 4px;",
+            checkboxColumn: "flex: 0 0 40px; display: flex; align-items: center; justify-content: center; border-right: 1px solid #444;",
+            workerCard: "margin-bottom: 12px; background: #2a2a2a; border-radius: 4px; overflow: hidden; display: flex;",
+            contentColumn: "flex: 1; display: flex; flex-direction: column; transition: background-color 0.2s ease;",
+            infoRow: "display: flex; align-items: center; padding: 8px; cursor: pointer; min-height: 60px;",
+            workerContent: "display: flex; align-items: center; gap: 8px; flex: 1;",
+            settingsArrow: "font-size: 12px; color: #888; transition: all 0.2s ease; margin-left: auto;",
+            formGroup: "display: flex; align-items: center; gap: 8px; margin-bottom: 8px;",
+            formLabel: "flex: 0 0 100px; font-size: 12px; color: #ccc;",
+            formInput: "flex: 1; padding: 4px 8px; background: #1a1a1a; border: 1px solid #444; border-radius: 4px; color: #fff; font-size: 12px;",
+            infoBox: "background-color: #333; color: #888; padding: 4px 12px; border-radius: 4px; font-size: 11px; text-align: center; flex: 1;"
+        };
+        
+        return {
+            createStatusDot(id, color = "#666", title = "Status") {
+                const dot = document.createElement("span");
+                if (id) dot.id = id;
+                dot.style.cssText = styles.statusDot + ` background-color: ${color};`;
+                dot.title = title;
+                return dot;
+            },
+            
+            createButton(text, onClick, customStyle = "") {
+                const button = document.createElement("button");
+                button.textContent = text;
+                button.className = "distributed-button";
+                button.style.cssText = DistributedExtension.BUTTON_STYLES.base + customStyle;
+                if (onClick) button.onclick = onClick;
+                return button;
+            },
+            
+            createButtonGroup(buttons, style = "") {
+                const group = document.createElement("div");
+                group.style.cssText = "display: flex; gap: 4px; margin-top: 10px;" + style;
+                buttons.forEach(button => group.appendChild(button));
+                return group;
+            },
+            
+            createWorkerControls(workerId, handlers = {}) {
+                const controlsDiv = document.createElement("div");
+                controlsDiv.id = `controls-${workerId}`;
+                controlsDiv.style.cssText = styles.controlsDiv;
+                
+                const buttons = [];
+                
+                if (handlers.launch) {
+                    const launchBtn = this.createButton('Launch', handlers.launch);
+                    launchBtn.id = `launch-${workerId}`;
+                    launchBtn.title = "Launch this worker instance";
+                    buttons.push(launchBtn);
+                }
+                
+                if (handlers.stop) {
+                    const stopBtn = this.createButton('Stop', handlers.stop);
+                    stopBtn.id = `stop-${workerId}`;
+                    stopBtn.title = "Stop this worker instance";
+                    buttons.push(stopBtn);
+                }
+                
+                if (handlers.viewLog) {
+                    const logBtn = this.createButton('View Log', handlers.viewLog);
+                    logBtn.id = `log-${workerId}`;
+                    logBtn.title = "View worker log file";
+                    buttons.push(logBtn);
+                }
+                
+                buttons.forEach(btn => controlsDiv.appendChild(btn));
+                return controlsDiv;
+            },
+            
+            createFormGroup(label, value, id, type = "text", placeholder = "") {
+                const group = document.createElement("div");
+                group.style.cssText = styles.formGroup;
+                
+                const labelEl = document.createElement("label");
+                labelEl.textContent = label;
+                labelEl.htmlFor = id;
+                labelEl.style.cssText = styles.formLabel;
+                
+                const input = document.createElement("input");
+                input.type = type;
+                input.id = id;
+                input.value = value;
+                input.placeholder = placeholder;
+                input.style.cssText = styles.formInput;
+                
+                group.appendChild(labelEl);
+                group.appendChild(input);
+                return { group, input };
+            },
+            
+            createWorkerCard() {
+                const card = document.createElement("div");
+                card.style.cssText = styles.workerCard;
+                
+                const checkboxColumn = document.createElement("div");
+                checkboxColumn.style.cssText = styles.checkboxColumn;
+                
+                const contentColumn = document.createElement("div");
+                contentColumn.style.cssText = styles.contentColumn;
+                
+                const infoRow = document.createElement("div");
+                infoRow.style.cssText = styles.infoRow;
+                
+                const workerContent = document.createElement("div");
+                workerContent.style.cssText = styles.workerContent;
+                
+                const settingsArrow = document.createElement("span");
+                settingsArrow.className = "settings-arrow";
+                settingsArrow.innerHTML = "▶";
+                settingsArrow.style.cssText = styles.settingsArrow;
+                
+                const controlsDiv = document.createElement("div");
+                controlsDiv.style.cssText = styles.controlsDiv;
+                
+                return {
+                    card,
+                    checkboxColumn,
+                    contentColumn,
+                    infoRow,
+                    workerContent,
+                    settingsArrow,
+                    controlsDiv
+                };
+            },
+            
+            createInfoBox(text) {
+                const box = document.createElement("div");
+                box.style.cssText = styles.infoBox;
+                box.textContent = text;
+                return box;
+            },
+            
+            addHoverEffect(element, onHover, onLeave) {
+                element.onmouseover = onHover;
+                element.onmouseout = onLeave;
+            },
+            
+            createCard(type = 'worker', options = {}) {
+                const card = document.createElement("div");
+                const baseStyle = "margin-bottom: 12px; border-radius: 4px; overflow: hidden; display: flex;";
+                
+                switch(type) {
+                    case 'master':
+                    case 'worker':
+                        card.style.cssText = baseStyle + "background: #2a2a2a;";
+                        break;
+                    case 'blueprint':
+                        card.style.cssText = baseStyle + "border: 2px solid #666; cursor: pointer; transition: all 0.2s ease; background: rgba(255, 255, 255, 0.02);";
+                        if (options.onClick) card.onclick = options.onClick;
+                        if (options.title) card.title = options.title;
+                        break;
+                    case 'add':
+                        card.style.cssText = "margin-top: 10px; " + baseStyle + "border: 1px solid #444; cursor: pointer; transition: all 0.2s ease;";
+                        if (options.onClick) card.onclick = options.onClick;
+                        if (options.title) card.title = options.title;
+                        break;
+                }
+                
+                if (options.onMouseEnter) {
+                    card.addEventListener('mouseenter', options.onMouseEnter);
+                }
+                if (options.onMouseLeave) {
+                    card.addEventListener('mouseleave', options.onMouseLeave);
+                }
+                
+                return card;
+            },
+            
+            createCardColumn(type = 'checkbox', options = {}) {
+                const column = document.createElement("div");
+                const baseStyle = "display: flex; align-items: center; justify-content: center;";
+                
+                switch(type) {
+                    case 'checkbox':
+                        column.style.cssText = baseStyle + "flex: 0 0 40px; border-right: 1px solid #444; cursor: default;";
+                        if (options.title) column.title = options.title;
+                        break;
+                    case 'icon':
+                        column.style.cssText = baseStyle + "width: 50px; flex-shrink: 0; font-size: 20px; color: #666;";
+                        break;
+                    case 'content':
+                        column.style.cssText = "flex: 1; display: flex; flex-direction: column; transition: background-color 0.2s ease;";
+                        break;
+                }
+                
+                return column;
+            },
+            
+            createInfoRow(options = {}) {
+                const row = document.createElement("div");
+                row.style.cssText = "display: flex; align-items: center; padding: 8px; cursor: pointer; min-height: 60px;";
+                if (options.onClick) row.onclick = options.onClick;
+                return row;
+            },
+            
+            createWorkerContent() {
+                const content = document.createElement("div");
+                content.style.cssText = "display: flex; align-items: center; gap: 8px; flex: 1;";
+                return content;
+            },
+            
+            createSettingsForm(fields = [], options = {}) {
+                const form = document.createElement("div");
+                form.style.cssText = "display: flex; flex-direction: column; gap: 10px;";
+                
+                fields.forEach(field => {
+                    if (field.type === 'checkbox') {
+                        const group = document.createElement("div");
+                        group.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 5px 0;";
+                        
+                        const checkbox = document.createElement("input");
+                        checkbox.type = "checkbox";
+                        checkbox.id = field.id;
+                        checkbox.checked = field.checked || false;
+                        if (field.onChange) checkbox.onchange = field.onChange;
+                        
+                        const label = document.createElement("label");
+                        label.htmlFor = field.id;
+                        label.textContent = field.label;
+                        label.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
+                        
+                        group.appendChild(checkbox);
+                        group.appendChild(label);
+                        form.appendChild(group);
+                    } else {
+                        const result = this.createFormGroup(field.label, field.value, field.id, field.type, field.placeholder);
+                        if (field.groupId) result.group.id = field.groupId;
+                        if (field.display) result.group.style.display = field.display;
+                        form.appendChild(result.group);
+                    }
+                });
+                
+                if (options.buttons) {
+                    const buttonGroup = this.createButtonGroup(options.buttons, options.buttonStyle || " margin-top: 8px;");
+                    form.appendChild(buttonGroup);
+                }
+                
+                return form;
+            },
+            
+            createCompleteCard(type, options = {}) {
+                // Create the main card
+                const card = this.createCard(type, options);
+                
+                // Create left column
+                let leftColumn;
+                if (type === 'master' || type === 'worker') {
+                    leftColumn = this.createCardColumn('checkbox', options.checkboxOptions);
+                    
+                    // Add checkbox
+                    const checkbox = document.createElement("input");
+                    checkbox.type = "checkbox";
+                    if (options.checkboxId) checkbox.id = options.checkboxId;
+                    checkbox.checked = options.checked || false;
+                    checkbox.disabled = options.disabled || false;
+                    checkbox.style.cssText = `cursor: ${options.disabled ? 'default' : 'pointer'}; width: 16px; height: 16px;${options.checkboxStyle || ''}`;
+                    if (options.checkboxTitle) checkbox.title = options.checkboxTitle;
+                    
+                    leftColumn.appendChild(checkbox);
+                    
+                    if (options.onCheckboxClick && !options.disabled) {
+                        checkbox.style.pointerEvents = "none";
+                        leftColumn.style.cursor = "pointer";
+                        leftColumn.onclick = options.onCheckboxClick;
+                    }
+                } else {
+                    // For blueprint and add cards, create icon column
+                    leftColumn = document.createElement("div");
+                    const borderColor = type === 'blueprint' ? '#666' : '#444';
+                    leftColumn.style.cssText = `flex: 0 0 40px; display: flex; align-items: center; justify-content: center; border-right: ${type === 'blueprint' ? '2px' : '1px'} solid ${borderColor}; color: ${type === 'blueprint' ? '#888' : '#555'}; font-size: ${type === 'blueprint' ? '24px' : '18px'}; font-weight: ${type === 'blueprint' ? 'bold' : 'normal'};`;
+                    leftColumn.innerHTML = "+";
+                    
+                    if (options.onHover) {
+                        card.addEventListener('mouseenter', () => {
+                            leftColumn.style.color = type === 'blueprint' ? '#aaa' : '#888';
+                            leftColumn.style.borderColor = type === 'blueprint' ? '#888' : '#666';
+                        });
+                        card.addEventListener('mouseleave', () => {
+                            leftColumn.style.color = type === 'blueprint' ? '#888' : '#555';
+                            leftColumn.style.borderColor = borderColor;
+                        });
+                    }
+                }
+                
+                // Create right column
+                const rightColumn = this.createCardColumn('content');
+                
+                // Add hover effect for master/worker cards
+                if ((type === 'master' || type === 'worker') && options.onHover !== false) {
+                    rightColumn.onmouseover = () => rightColumn.style.backgroundColor = "#333";
+                    rightColumn.onmouseout = () => rightColumn.style.backgroundColor = "transparent";
+                }
+                
+                // Create info row
+                const infoRow = this.createInfoRow(options.infoRowOptions);
+                
+                // Create worker content
+                const workerContent = this.createWorkerContent();
+                
+                // Build the card
+                infoRow.appendChild(workerContent);
+                rightColumn.appendChild(infoRow);
+                
+                // Add controls div if specified
+                if (options.includeControls) {
+                    const controlsDiv = document.createElement("div");
+                    controlsDiv.id = options.controlsId;
+                    controlsDiv.style.cssText = styles.controlsDiv;
+                    rightColumn.appendChild(controlsDiv);
+                }
+                
+                // Add settings div if specified
+                if (options.includeSettings) {
+                    const settingsDiv = document.createElement("div");
+                    settingsDiv.id = options.settingsId;
+                    settingsDiv.className = "worker-settings";
+                    settingsDiv.style.cssText = styles.workerSettings;
+                    rightColumn.appendChild(settingsDiv);
+                }
+                
+                card.appendChild(leftColumn);
+                card.appendChild(rightColumn);
+                
+                return {
+                    card,
+                    leftColumn,
+                    rightColumn,
+                    infoRow,
+                    workerContent,
+                    checkbox: leftColumn.querySelector('input[type="checkbox"]')
+                };
+            },
+            
+            styles // Expose styles for custom usage
+        };
+    }
+    
+    // --- State Management ---
+    _createStateManager() {
+        const state = {
+            workers: new Map(), // Unified worker state: { status, managed, launching, expanded, ... }
+            masterStatus: 'online',
+            domCache: new Map() // Cache DOM elements
+        };
+        
+        return {
+            // Worker state management
+            getWorker(workerId) {
+                return state.workers.get(String(workerId)) || {};
+            },
+            
+            updateWorker(workerId, updates) {
+                const id = String(workerId);
+                const current = state.workers.get(id) || {};
+                state.workers.set(id, { ...current, ...updates });
+                return state.workers.get(id);
+            },
+            
+            setWorkerStatus(workerId, status) {
+                return this.updateWorker(workerId, { status });
+            },
+            
+            setWorkerManaged(workerId, info) {
+                return this.updateWorker(workerId, { managed: info });
+            },
+            
+            setWorkerLaunching(workerId, launching) {
+                return this.updateWorker(workerId, { launching });
+            },
+            
+            setWorkerExpanded(workerId, expanded) {
+                return this.updateWorker(workerId, { expanded });
+            },
+            
+            isWorkerLaunching(workerId) {
+                return this.getWorker(workerId).launching || false;
+            },
+            
+            isWorkerExpanded(workerId) {
+                return this.getWorker(workerId).expanded || false;
+            },
+            
+            isWorkerManaged(workerId) {
+                return !!this.getWorker(workerId).managed;
+            },
+            
+            getWorkerStatus(workerId) {
+                return this.getWorker(workerId).status || {};
+            },
+            
+            // Master state
+            setMasterStatus(status) {
+                state.masterStatus = status;
+            },
+            
+            getMasterStatus() {
+                return state.masterStatus;
+            },
+            
+            // DOM cache
+            cacheElement(key, element) {
+                state.domCache.set(key, element);
+            },
+            
+            getCachedElement(key) {
+                return state.domCache.get(key);
+            },
+            
+            clearCache() {
+                state.domCache.clear();
+            }
+        };
+    }
+    
+    // --- API Client ---
+    _createApiClient() {
+        const baseUrl = window.location.origin;
+        
+        const request = async (endpoint, options = {}) => {
+            try {
+                const response = await fetch(`${baseUrl}${endpoint}`, {
+                    headers: { 'Content-Type': 'application/json' },
+                    ...options
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({ message: 'Request failed' }));
+                    throw new Error(error.message || `HTTP ${response.status}`);
+                }
+                
+                return await response.json();
+            } catch (error) {
+                this.log(`API Error: ${endpoint} - ${error.message}`);
+                throw error;
+            }
+        };
+        
+        return {
+            // Config endpoints
+            async getConfig() {
+                return request('/distributed/config');
+            },
+            
+            async updateWorker(workerId, data) {
+                return request('/distributed/config/update_worker', {
+                    method: 'POST',
+                    body: JSON.stringify({ worker_id: workerId, ...data })
+                });
+            },
+            
+            async deleteWorker(workerId) {
+                return request('/distributed/config/delete_worker', {
+                    method: 'POST',
+                    body: JSON.stringify({ worker_id: workerId })
+                });
+            },
+            
+            async updateSetting(key, value) {
+                return request('/distributed/config/update_setting', {
+                    method: 'POST',
+                    body: JSON.stringify({ key, value })
+                });
+            },
+            
+            async updateMaster(data) {
+                return request('/distributed/config/update_master', {
+                    method: 'POST',
+                    body: JSON.stringify(data)
+                });
+            },
+            
+            // Worker management endpoints
+            async launchWorker(workerId) {
+                return request('/distributed/launch_worker', {
+                    method: 'POST',
+                    body: JSON.stringify({ worker_id: workerId })
+                });
+            },
+            
+            async stopWorker(workerId) {
+                return request('/distributed/stop_worker', {
+                    method: 'POST',
+                    body: JSON.stringify({ worker_id: workerId })
+                });
+            },
+            
+            async getManagedWorkers() {
+                return request('/distributed/managed_workers');
+            },
+            
+            async getWorkerLog(workerId, lines = 1000) {
+                return request(`/distributed/worker_log/${workerId}?lines=${lines}`);
+            },
+            
+            async clearLaunchingFlag(workerId) {
+                return request('/distributed/worker/clear_launching', {
+                    method: 'POST',
+                    body: JSON.stringify({ worker_id: workerId })
+                });
+            },
+            
+            // Job preparation
+            async prepareJob(multiJobId) {
+                return request('/distributed/prepare_job', {
+                    method: 'POST',
+                    body: JSON.stringify({ multi_job_id: multiJobId })
+                });
+            },
+            
+            // Image loading
+            async loadImage(imagePath) {
+                return request('/distributed/load_image', {
+                    method: 'POST',
+                    body: JSON.stringify({ image_path: imagePath })
+                });
+            },
+            
+            // Network info
+            async getNetworkInfo() {
+                return request('/distributed/network_info');
+            },
+            
+            // Status checking (with timeout)
+            async checkStatus(url, timeout = 900) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeout);
+                
+                try {
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        mode: 'cors',
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return await response.json();
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    throw error;
+                }
+            },
+            
+            // Batch status checking
+            async checkMultipleStatuses(urls) {
+                return Promise.allSettled(
+                    urls.map(url => this.checkStatus(url))
+                );
+            }
+        };
+    }
 
     injectStyles() {
         const styleId = 'distributed-styles';
@@ -118,16 +680,10 @@ class DistributedExtension {
 
     async loadConfig() {
         try {
-            const response = await fetch(`${window.location.origin}/distributed/config`);
-            if (response.ok) {
-                this.config = await response.json();
-                this.log("Loaded config: " + JSON.stringify(this.config));
-            } else {
-                this.log("Failed to load config");
-                this.config = { workers: [], settings: {} };
-            }
+            this.config = await this.api.getConfig();
+            this.log("Loaded config: " + JSON.stringify(this.config));
         } catch (error) {
-            this.log("Error loading config: " + error.message);
+            this.log("Failed to load config: " + error.message);
             this.config = { workers: [], settings: {} };
         }
     }
@@ -139,12 +695,7 @@ class DistributedExtension {
         }
         
         try {
-            await fetch(`${window.location.origin}/distributed/config/update_worker`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ worker_id: workerId, enabled: enabled })
-            });
-            
+            await this.api.updateWorker(workerId, { enabled });
         } catch (error) {
             this.log("Error updating worker: " + error.message);
         }
@@ -158,11 +709,7 @@ class DistributedExtension {
         this.config.settings[key] = value;
         
         try {
-            await fetch(`${window.location.origin}/distributed/config/update_setting`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key, value })
-            });
+            await this.api.updateSetting(key, value);
             
             app.extensionManager.toast.add({
                 severity: "success",
@@ -195,39 +742,36 @@ class DistributedExtension {
     }
 
     _createButton(text, onClick, style) {
-        const button = document.createElement("button");
-        button.textContent = text;
-        button.style.cssText = DistributedExtension.BUTTON_STYLES.base + style;
-        button.onclick = onClick;
-        button.className = "distributed-button";
-        return button;
+        return this.ui.createButton(text, onClick, style);
     }
-
-    async _handleInterruptWorkers(button) {
+    
+    // Generic handler for parallel worker operations
+    async _handleWorkerOperation(button, operation, successText, errorText) {
         const originalText = button.textContent;
         const originalStyle = button.style.cssText;
-        button.textContent = "Interrupting...";
+        
+        button.textContent = operation.loadingText;
         button.disabled = true;
-        button.style.backgroundColor = "#c04c4c";
         
         try {
-            const targetsToInterrupt = this.enabledWorkers.map(w => ({ 
+            const urlsToProcess = this.enabledWorkers.map(w => ({ 
                 name: w.name, 
                 url: this.getWorkerUrl(w)
             }));
             
-            if (targetsToInterrupt.length === 0) {
+            if (urlsToProcess.length === 0) {
                 button.textContent = "No Workers";
-                button.style.backgroundColor = DistributedExtension.BUTTON_STYLES.error.split(':')[1].trim().replace(';', '');
+                button.style.backgroundColor = "#c04c4c";
                 setTimeout(() => {
                     button.textContent = originalText;
                     button.style.cssText = originalStyle;
+                    button.disabled = false;
                 }, 3000);
                 return;
             }
             
-            const promises = targetsToInterrupt.map(target =>
-                fetch(`${target.url}/interrupt`, { 
+            const promises = urlsToProcess.map(target =>
+                fetch(`${target.url}${operation.endpoint}`, { 
                     method: 'POST', 
                     mode: 'cors'
                 })
@@ -239,14 +783,13 @@ class DistributedExtension {
             const failures = results.filter(r => !r.ok);
             
             if (failures.length === 0) {
-                button.textContent = "Interrupted!";
+                button.textContent = successText;
                 button.style.backgroundColor = DistributedExtension.BUTTON_STYLES.success.split(':')[1].trim().replace(';', '');
-                // Update status after interrupt
-                setTimeout(() => this.checkAllWorkerStatuses(), 500);
+                if (operation.onSuccess) operation.onSuccess();
             } else {
-                button.textContent = "Error! See Console";
+                button.textContent = errorText;
                 button.style.backgroundColor = DistributedExtension.BUTTON_STYLES.error.split(':')[1].trim().replace(';', '');
-                this.log("Failed to interrupt: " + failures.map(f => f.name).join(", "));
+                this.log(`${operation.name} failed on: ${failures.map(f => f.name).join(", ")}`);
             }
             
             setTimeout(() => {
@@ -258,71 +801,21 @@ class DistributedExtension {
         }
     }
 
+    async _handleInterruptWorkers(button) {
+        return this._handleWorkerOperation(button, {
+            name: "Interrupt",
+            endpoint: "/interrupt",
+            loadingText: "Interrupting...",
+            onSuccess: () => setTimeout(() => this.checkAllWorkerStatuses(), 500)
+        }, "Interrupted!", "Error! See Console");
+    }
+
     async _handleClearMemory(button) {
-        const originalText = button.textContent;
-        const originalStyle = button.style.cssText; // Store complete original styling
-        
-        button.textContent = "Clearing...";
-        button.disabled = true;
-        
-        try {
-            const urlsToClear = this.enabledWorkers.map(w => ({ 
-                name: w.name, 
-                url: this.getWorkerUrl(w)
-            }));
-            
-            if (urlsToClear.length === 0) {
-                button.textContent = "No Workers";
-                // Preserve original cssText but update background color
-                button.style.cssText = originalStyle.replace(/background-color:[^;]*;?/, '') + ' background-color: #c04c4c;';
-                setTimeout(() => {
-                    button.textContent = originalText;
-                    button.style.cssText = originalStyle; // Restore complete original styling
-                    button.disabled = false;
-                }, 3000);
-                return;
-            }
-            
-            const promises = urlsToClear.map(target =>
-                fetch(`${target.url}/distributed/clear_memory`, { 
-                    method: 'POST', 
-                    mode: 'cors'
-                })
-                    .then(response => ({ ok: response.ok, name: target.name }))
-                    .catch(() => ({ ok: false, name: target.name }))
-            );
-            
-            const results = await Promise.all(promises);
-            const failures = results.filter(r => !r.ok);
-            
-            if (failures.length === 0) {
-                button.textContent = "Success!";
-                // Preserve original cssText but update background color
-                button.style.cssText = originalStyle.replace(/background-color:[^;]*;?/, '') + ' background-color: #3ca03c;';
-            } else {
-                button.textContent = "Error! See Console";
-                // Preserve original cssText but update background color  
-                button.style.cssText = originalStyle.replace(/background-color:[^;]*;?/, '') + ' background-color: #c04c4c;';
-                this.log("Failed to clear memory on: " + failures.map(f => f.name).join(", "));
-            }
-            
-            setTimeout(() => {
-                button.textContent = originalText;
-                button.style.cssText = originalStyle; // Restore complete original styling
-                button.disabled = false;
-            }, 3000);
-        } catch (error) {
-            // Handle any unexpected errors
-            button.textContent = "Error! See Console";
-            button.style.cssText = originalStyle.replace(/background-color:[^;]*;?/, '') + ' background-color: #c04c4c;';
-            this.log("Unexpected error in clear memory: " + error.message);
-            
-            setTimeout(() => {
-                button.textContent = originalText;
-                button.style.cssText = originalStyle;
-                button.disabled = false;
-            }, 3000);
-        }
+        return this._handleWorkerOperation(button, {
+            name: "Clear memory",
+            endpoint: "/distributed/clear_memory",
+            loadingText: "Clearing..."
+        }, "Success!", "Error! See Console");
     }
 
 
@@ -437,18 +930,7 @@ class DistributedExtension {
                 // Save each worker using the update endpoint
                 for (const worker of newWorkers) {
                     try {
-                        const response = await fetch(`${window.location.origin}/distributed/config/update_worker`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                worker_id: worker.id,
-                                ...worker
-                            })
-                        });
-                        
-                        if (!response.ok) {
-                            this.log(`Failed to save worker ${worker.name}`);
-                        }
+                        await this.api.updateWorker(worker.id, worker);
                     } catch (error) {
                         this.log(`Error saving worker ${worker.name}: ${error.message}`);
                     }
@@ -466,13 +948,10 @@ class DistributedExtension {
         }
         
         // Master Node Section - styled exactly like a worker card
-        const masterDiv = document.createElement("div");
-        masterDiv.style.cssText = "margin-bottom: 12px; background: #2a2a2a; border-radius: 4px; overflow: hidden; display: flex;";
+        const masterDiv = this.ui.createCard('master');
         
         // Left column - checkbox area (always checked and disabled)
-        const checkboxColumn = document.createElement("div");
-        checkboxColumn.style.cssText = "flex: 0 0 40px; display: flex; align-items: center; justify-content: center; border-right: 1px solid #444; cursor: default;";
-        checkboxColumn.title = "Master node is always enabled";
+        const checkboxColumn = this.ui.createCardColumn('checkbox', { title: "Master node is always enabled" });
         
         // Greyed out checkbox that's always checked
         const checkbox = document.createElement("input");
@@ -484,22 +963,16 @@ class DistributedExtension {
         checkboxColumn.appendChild(checkbox);
         
         // Right column - content area
-        const contentColumn = document.createElement("div");
-        contentColumn.style.cssText = "flex: 1; display: flex; flex-direction: column; transition: background-color 0.2s ease;";
+        const contentColumn = this.ui.createCardColumn('content');
         
         // First row: master info
-        const infoRow = document.createElement("div");
-        infoRow.style.cssText = "display: flex; align-items: center; padding: 8px; cursor: pointer; min-height: 60px;";
+        const infoRow = this.ui.createInfoRow({ onClick: null });
         infoRow.title = "Click to expand settings";
         
         // Worker content
-        const workerContent = document.createElement("div");
-        workerContent.style.cssText = "display: flex; align-items: center; gap: 8px; flex: 1;";
+        const workerContent = this.ui.createWorkerContent();
         
-        const statusDot = document.createElement("span");
-        statusDot.id = "master-status";
-        statusDot.style.cssText = "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: #4CAF50;";
-        statusDot.title = "Online";
+        const statusDot = this.ui.createStatusDot("master-status", "#4CAF50", "Online");
         
         const gpuInfo = document.createElement("span");
         const cudaInfo = this.masterCudaDevice !== undefined ? `CUDA ${this.masterCudaDevice} • ` : '';
@@ -569,18 +1042,15 @@ class DistributedExtension {
         const settingsForm = document.createElement("div");
         settingsForm.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
         
-        // Name field - reuse createFormGroup
-        const nameGroup = this.createFormGroup("Name:", this.config?.master?.name || "Master", "master-name");
-        settingsForm.appendChild(nameGroup);
+        // Name field
+        const nameResult = this.ui.createFormGroup("Name:", this.config?.master?.name || "Master", "master-name");
+        settingsForm.appendChild(nameResult.group);
         
         // Host field
-        const hostGroup = this.createFormGroup("Host:", this.config?.master?.host || "", "master-host", "text", "Auto-detect if empty");
-        settingsForm.appendChild(hostGroup);
+        const hostResult = this.ui.createFormGroup("Host:", this.config?.master?.host || "", "master-host", "text", "Auto-detect if empty");
+        settingsForm.appendChild(hostResult.group);
         
         // Buttons row - using same style as workers
-        const buttonGroup = document.createElement("div");
-        buttonGroup.style.cssText = "display: flex; gap: 8px; margin-top: 8px;";
-        
         const saveBtn = this._createButton("Save", 
             async () => {
             const nameInput = document.getElementById('master-name');
@@ -615,9 +1085,7 @@ class DistributedExtension {
             "background-color: #555;");
         cancelBtn.style.cssText += " padding: 6px 12px; font-size: 12px;";
         
-        buttonGroup.appendChild(saveBtn);
-        buttonGroup.appendChild(cancelBtn);
-        
+        const buttonGroup = this.ui.createButtonGroup([saveBtn, cancelBtn], " margin-top: 8px;");
         settingsForm.appendChild(buttonGroup);
         masterSettingsDiv.appendChild(settingsForm);
         
@@ -637,9 +1105,10 @@ class DistributedExtension {
         
         // If no workers exist, show a full blueprint placeholder first
         if (workers.length === 0) {
-            const blueprintDiv = document.createElement("div");
-            blueprintDiv.style.cssText = "margin-bottom: 12px; border: 2px solid #666; border-radius: 4px; overflow: hidden; display: flex; cursor: pointer; transition: all 0.2s ease; background: rgba(255, 255, 255, 0.02);";
-            blueprintDiv.title = "Click to add your first worker";
+            const blueprintDiv = this.ui.createCard('blueprint', {
+                title: "Click to add your first worker",
+                onClick: () => this.addNewWorker()
+            });
             
             // Left column - plus icon
             const blueprintCheckbox = document.createElement("div");
@@ -647,18 +1116,15 @@ class DistributedExtension {
             blueprintCheckbox.innerHTML = "+";
             
             // Right column
-            const blueprintContent = document.createElement("div");
-            blueprintContent.style.cssText = "flex: 1; display: flex; flex-direction: column;";
+            const blueprintContent = this.ui.createCardColumn('content');
             
             // Info row with placeholder content
-            const blueprintInfo = document.createElement("div");
-            blueprintInfo.style.cssText = "display: flex; align-items: center; padding: 8px; min-height: 60px;";
+            const blueprintInfo = this.ui.createInfoRow();
             
-            const blueprintWorkerContent = document.createElement("div");
-            blueprintWorkerContent.style.cssText = "display: flex; align-items: center; gap: 8px; flex: 1;";
+            const blueprintWorkerContent = this.ui.createWorkerContent();
             
-            const blueprintDot = document.createElement("span");
-            blueprintDot.style.cssText = "display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 1px solid #555;";
+            const blueprintDot = this.ui.createStatusDot(null, "transparent", "");
+            blueprintDot.style.border = "1px solid #555";
             
             const blueprintText = document.createElement("span");
             blueprintText.innerHTML = `<strong style="color: #aaa; font-size: 16px;">Add New Worker</strong><br><small style="color: #555;">[CUDA] • [Port]</small>`;
@@ -683,9 +1149,6 @@ class DistributedExtension {
             blueprintDiv.appendChild(blueprintCheckbox);
             blueprintDiv.appendChild(blueprintContent);
             
-            // Click handler
-            blueprintDiv.onclick = () => this.addNewWorker();
-            
             // Hover effect
             blueprintDiv.onmouseover = () => {
                 blueprintDiv.style.borderColor = "#888";
@@ -705,12 +1168,11 @@ class DistributedExtension {
         
         // Show existing workers
         workers.forEach(worker => {
-            const gpuDiv = document.createElement("div");
-            gpuDiv.style.cssText = "margin-bottom: 12px; background: #2a2a2a; border-radius: 4px; overflow: hidden; display: flex;";
+            const gpuDiv = this.ui.createCard('worker');
             
             // Left column - checkbox area (extends full height)
-            const checkboxColumn = document.createElement("div");
-            checkboxColumn.style.cssText = "flex: 0 0 40px; display: flex; align-items: center; justify-content: center; border-right: 1px solid #444; cursor: pointer;";
+            const checkboxColumn = this.ui.createCardColumn('checkbox');
+            checkboxColumn.style.cursor = "pointer";
             checkboxColumn.title = "Enable/disable this worker";
             
             // Standard checkbox
@@ -730,22 +1192,16 @@ class DistributedExtension {
             };
             
             // Right column - content area
-            const contentColumn = document.createElement("div");
-            contentColumn.style.cssText = "flex: 1; display: flex; flex-direction: column; transition: background-color 0.2s ease;";
+            const contentColumn = this.ui.createCardColumn('content');
             
             // First row: worker info
-            const infoRow = document.createElement("div");
-            infoRow.style.cssText = "display: flex; align-items: center; padding: 8px; cursor: pointer; min-height: 60px;";
+            const infoRow = this.ui.createInfoRow();
             infoRow.title = "Click to expand settings";
             
             // Worker content
-            const workerContent = document.createElement("div");
-            workerContent.style.cssText = "display: flex; align-items: center; gap: 8px; flex: 1;";
+            const workerContent = this.ui.createWorkerContent();
             
-            const statusDot = document.createElement("span");
-            statusDot.id = `status-${worker.id}`;
-            statusDot.style.cssText = "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: #666;";
-            statusDot.title = "Checking status...";
+            const statusDot = this.ui.createStatusDot(`status-${worker.id}`, "#666", "Checking status...");
             
             const gpuInfo = document.createElement("span");
             const isRemote = this.isRemoteWorker(worker);
@@ -767,7 +1223,7 @@ class DistributedExtension {
             settingsArrow.className = "settings-arrow";
             settingsArrow.innerHTML = "▶";
             settingsArrow.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease; margin-left: auto;";
-            if (this.expandedWorkers.has(worker.id)) {
+            if (this.state.isWorkerExpanded(worker.id)) {
                 settingsArrow.style.transform = "rotate(90deg)";
             }
             
@@ -809,39 +1265,40 @@ class DistributedExtension {
                 controlsDiv.appendChild(remoteInfo);
             } else {
                 // Local workers get launch/stop/log buttons
-                const launchBtn = this._createButton('Launch', 
-                    () => this.launchWorker(worker.id), 
-                    'background-color: #555;'); // Neutral color initially
-                launchBtn.style.cssText += ' padding: 3px 8px; font-size: 11px;';
+                const controls = this.ui.createWorkerControls(worker.id, {
+                    launch: () => this.launchWorker(worker.id),
+                    stop: () => this.stopWorker(worker.id),
+                    viewLog: () => this.viewWorkerLog(worker.id)
+                });
+                
+                // Apply custom button styles
+                const launchBtn = controls.querySelector(`#launch-${worker.id}`);
+                const stopBtn = controls.querySelector(`#stop-${worker.id}`);
+                const logBtn = controls.querySelector(`#log-${worker.id}`);
+                
+                launchBtn.style.cssText += ' padding: 3px 8px; font-size: 11px; background-color: #555;';
                 launchBtn.title = "Launch worker (runs in background with logging)";
                 
-                const stopBtn = this._createButton('Stop', 
-                    () => this.stopWorker(worker.id), 
-                    'background-color: #555;'); // Neutral color initially
-                stopBtn.style.cssText += ' padding: 3px 8px; font-size: 11px;';
+                stopBtn.style.cssText += ' padding: 3px 8px; font-size: 11px; background-color: #555;';
                 stopBtn.title = "Stop worker";
                 
-                const logBtn = this._createButton('View Log', 
-                    () => this.viewWorkerLog(worker.id), 
-                    'background-color: #685434;'); // ComfyUI darker yellow
-                logBtn.style.cssText += ' padding: 3px 8px; font-size: 11px; display: none;';
-                logBtn.id = `log-${worker.id}`;
-                logBtn.title = "View worker log file";
+                logBtn.style.cssText += ' padding: 3px 8px; font-size: 11px; display: none; background-color: #685434;';
                 
-                controlsDiv.appendChild(launchBtn);
-                controlsDiv.appendChild(stopBtn);
-                controlsDiv.appendChild(logBtn);
+                // Move controls into the controlsDiv
+                while (controls.firstChild) {
+                    controlsDiv.appendChild(controls.firstChild);
+                }
             }
             
             // Third row: expandable settings panel
             const settingsDiv = document.createElement("div");
             settingsDiv.id = `settings-${worker.id}`;
             settingsDiv.className = "worker-settings";
-            if (this.expandedWorkers.has(worker.id)) {
+            if (this.state.isWorkerExpanded(worker.id)) {
                 settingsDiv.classList.add("expanded");
             }
             settingsDiv.style.cssText = "margin: 0 8px; padding: 0 12px; background: #1e1e1e; border-radius: 4px;";
-            if (this.expandedWorkers.has(worker.id)) {
+            if (this.state.isWorkerExpanded(worker.id)) {
                 settingsDiv.style.padding = "12px";
                 settingsDiv.style.marginTop = "8px";
                 settingsDiv.style.marginBottom = "8px";
@@ -866,9 +1323,10 @@ class DistributedExtension {
         // Only show the minimal "Add Worker" box if there are existing workers
         if (workers.length > 0) {
             // Add Worker placeholder box
-            const addWorkerDiv = document.createElement("div");
-            addWorkerDiv.style.cssText = "margin-top: 10px; margin-bottom: 12px; border: 1px solid #444; border-radius: 4px; overflow: hidden; display: flex; cursor: pointer; transition: all 0.2s ease;";
-            addWorkerDiv.title = "Click to add a new worker";
+            const addWorkerDiv = this.ui.createCard('add', {
+                title: "Click to add a new worker",
+                onClick: () => this.addNewWorker()
+            });
             
             // Left column - plus icon area
             const plusColumn = document.createElement("div");
@@ -876,20 +1334,18 @@ class DistributedExtension {
             plusColumn.innerHTML = "+";
             
             // Right column - content area
-            const addContentColumn = document.createElement("div");
-            addContentColumn.style.cssText = "flex: 1; display: flex; flex-direction: column;";
+            const addContentColumn = this.ui.createCardColumn('content');
             
             // Info row
-            const addInfoRow = document.createElement("div");
-            addInfoRow.style.cssText = "display: flex; align-items: center; padding: 8px; min-height: 42px;"; // Reduced from 60px to 42px (30% reduction)
+            const addInfoRow = this.ui.createInfoRow();
+            addInfoRow.style.minHeight = "42px"; // Reduced from 60px to 42px (30% reduction)
             
             // Placeholder content
-            const addContent = document.createElement("div");
-            addContent.style.cssText = "display: flex; align-items: center; gap: 8px; flex: 1;";
+            const addContent = this.ui.createWorkerContent();
             
             // Placeholder dot
-            const placeholderDot = document.createElement("span");
-            placeholderDot.style.cssText = "display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 1px solid #555;";
+            const placeholderDot = this.ui.createStatusDot(null, "transparent", "");
+            placeholderDot.style.border = "1px solid #555";
             
             // Placeholder text
             const placeholderInfo = document.createElement("span");
@@ -917,9 +1373,6 @@ class DistributedExtension {
                 plusColumn.style.color = "#555";
                 plusColumn.style.borderColor = "#444";
             };
-            
-            // Click handler
-            addWorkerDiv.onclick = () => this.addNewWorker();
             
             gpuSection.appendChild(addWorkerDiv);
         }
@@ -1544,11 +1997,7 @@ class DistributedExtension {
 
     async _prepareDistributedJob(multi_job_id) {
         try {
-            await fetch(`${window.location.origin}/distributed/prepare_job`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ multi_job_id })
-            });
+            await this.api.prepareJob(multi_job_id);
         } catch (error) {
             this.log("Error preparing job: " + error.message);
             throw error;
@@ -1611,8 +2060,8 @@ class DistributedExtension {
         if (!this.config || !this.config.workers) return;
         
         for (const worker of this.config.workers) {
-            // Only check status for enabled workers
-            if (worker.enabled) {
+            // Check status for enabled workers OR workers that are launching
+            if (worker.enabled || this.state.isWorkerLaunching(worker.id)) {
                 this.checkWorkerStatus(worker);
             }
         }
@@ -1684,7 +2133,7 @@ class DistributedExtension {
                 const isProcessing = queueRemaining > 0;
                 
                 // Update status
-                this.workerStatuses.set(worker.id, {
+                this.state.setWorkerStatus(worker.id, {
                     online: true,
                     processing: isProcessing,
                     queueCount: queueRemaining
@@ -1698,8 +2147,8 @@ class DistributedExtension {
                 }
                 
                 // Clear launching state since worker is now online
-                if (this.launchingWorkers.has(worker.id)) {
-                    this.launchingWorkers.delete(worker.id);
+                if (this.state.isWorkerLaunching(worker.id)) {
+                    this.state.setWorkerLaunching(worker.id, false);
                     this.clearLaunchingFlag(worker.id);
                 }
             } else {
@@ -1707,14 +2156,14 @@ class DistributedExtension {
             }
         } catch (error) {
             // Worker is offline or unreachable
-            this.workerStatuses.set(worker.id, {
+            this.state.setWorkerStatus(worker.id, {
                 online: false,
                 processing: false,
                 queueCount: 0
             });
             
             // Check if worker is launching
-            if (this.launchingWorkers.has(worker.id)) {
+            if (this.state.isWorkerLaunching(worker.id)) {
                 this.updateStatusDot(worker.id, "#f0ad4e", "Launching...", true);
             } else {
                 // Only update to red if not currently launching
@@ -1796,14 +2245,8 @@ class DistributedExtension {
                 }
                 
                 // Load image from master's filesystem via API
-                const response = await fetch(`${window.location.origin}/distributed/load_image`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image_path: filename })
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
+                try {
+                    const data = await this.api.loadImage(filename);
                     const imageData = {
                         name: filename,
                         image: data.image_data
@@ -1813,8 +2256,9 @@ class DistributedExtension {
                     // Cache the image for future use
                     this._imageCache.set(filename, imageData);
                     this.debugLog(`Loaded and cached image: ${filename}`);
-                } else {
-                    this.log(`Failed to load image ${filename}: ${response.statusText}`);
+                } catch (loadError) {
+                    this.log(`Failed to load image ${filename}: ${loadError.message}`);
+                    throw loadError;
                 }
             } catch (error) {
                 this.log(`Error loading image ${filename}: ${error.message}`);
@@ -1939,11 +2383,11 @@ class DistributedExtension {
         const launchBtn = document.querySelector(`#controls-${workerId} button`);
 
         this.updateStatusDot(workerId, "#f0ad4e", "Launching...", true);
-        this.launchingWorkers.add(workerId);
+        this.state.setWorkerLaunching(workerId, true);
 
         // Allow 90 seconds for worker to launch (model loading can take time)
         setTimeout(() => {
-            this.launchingWorkers.delete(workerId);
+            this.state.setWorkerLaunching(workerId, false);
         }, 90000);
 
         if (!launchBtn) return;
@@ -1952,20 +2396,14 @@ class DistributedExtension {
             // Disable button immediately
             launchBtn.disabled = true;
             
-            const response = await fetch(`${window.location.origin}/distributed/launch_worker`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ worker_id: workerId })
-            });
-
-            const result = await response.json();
-            if (response.ok) {
+            const result = await this.api.launchWorker(workerId);
+            if (result) {
                 this.log(`Launched ${worker.name} (PID: ${result.pid})`);
                 if (result.log_file) {
                     this.debugLog(`Log file: ${result.log_file}`);
                 }
                 
-                this.managedWorkers.set(String(workerId), {
+                this.state.setWorkerManaged(workerId, {
                     pid: result.pid,
                     log_file: result.log_file,
                     started_at: Date.now()
@@ -1974,31 +2412,20 @@ class DistributedExtension {
                 // Update controls immediately to hide launch button and show stop/log buttons
                 this.updateWorkerControls(workerId);
                 setTimeout(() => this.checkWorkerStatus(worker), 2000);
-            } else {
-                throw new Error(result.message || 'Failed to launch worker');
-            }
-
-            // Check if worker was already running
-            if (!response.ok && result && result.message && result.message.includes("already running")) {
-                if (result.log_file) {
-                    const existing = this.managedWorkers.get(String(workerId));
-                    if (!existing) {
-                        this.managedWorkers.set(String(workerId), {
-                            log_file: result.log_file
-                        });
-                    } else {
-                        existing.log_file = result.log_file;
-                    }
-                }
-                this.updateWorkerControls(workerId);
-                setTimeout(() => this.checkWorkerStatus(worker), 100);
             }
         } catch (error) {
-            this.log(`Error launching worker: ${error}`);
-            
-            // Re-enable button on error
-            if (launchBtn) {
-                launchBtn.disabled = false;
+            // Check if worker was already running
+            if (error.message && error.message.includes("already running")) {
+                this.log(`Worker ${worker.name} is already running`);
+                this.updateWorkerControls(workerId);
+                setTimeout(() => this.checkWorkerStatus(worker), 100);
+            } else {
+                this.log(`Error launching worker: ${error.message || error}`);
+                
+                // Re-enable button on error
+                if (launchBtn) {
+                    launchBtn.disabled = false;
+                }
             }
         }
     }    
@@ -2015,16 +2442,10 @@ class DistributedExtension {
         }
         
         try {
-            const response = await fetch(`${window.location.origin}/distributed/stop_worker`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ worker_id: workerId })
-            });
-            
-            const result = await response.json();
-            if (response.ok) {
+            const result = await this.api.stopWorker(workerId);
+            if (result) {
                 this.log(`Stopped worker: ${result.message}`);
-                this.managedWorkers.delete(String(workerId));
+                this.state.setWorkerManaged(workerId, null);
                 
                 // Flash success feedback
                 if (stopBtn) {
@@ -2065,14 +2486,10 @@ class DistributedExtension {
     
     async clearLaunchingFlag(workerId) {
         try {
-            await fetch(`${window.location.origin}/distributed/worker/clear_launching`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ worker_id: workerId })
-            });
+            await this.api.clearLaunchingFlag(workerId);
             this.debugLog(`Cleared launching flag for worker ${workerId}`);
         } catch (error) {
-            this.debugLog(`Error clearing launching flag: ${error}`);
+            this.debugLog(`Error clearing launching flag: ${error.message || error}`);
         }
     }
     
@@ -2146,26 +2563,24 @@ class DistributedExtension {
     
     async loadManagedWorkers() {
         try {
-            const response = await fetch(`${window.location.origin}/distributed/managed_workers`);
-            if (response.ok) {
-                const result = await response.json();
-                this.managedWorkers.clear();
+            const result = await this.api.getManagedWorkers();
+            // Clear all managed worker info
+            this.state.clearCache();
+            
+            // Check for launching workers
+            for (const [workerId, info] of Object.entries(result.managed_workers)) {
+                this.state.setWorkerManaged(workerId, info);
                 
-                // Check for launching workers
-                for (const [workerId, info] of Object.entries(result.managed_workers)) {
-                    this.managedWorkers.set(workerId, info);
-                    
-                    // If worker is marked as launching, add to launchingWorkers set
-                    if (info.launching) {
-                        this.launchingWorkers.add(parseInt(workerId));
-                        this.debugLog(`Worker ${workerId} is in launching state`);
-                    }
+                // If worker is marked as launching, add to launchingWorkers set
+                if (info.launching) {
+                    this.state.setWorkerLaunching(workerId, true);
+                    this.debugLog(`Worker ${workerId} is in launching state`);
                 }
-                
-                // Update UI for all workers
-                if (this.config?.workers) {
-                    this.config.workers.forEach(w => this.updateWorkerControls(w.id));
-                }
+            }
+            
+            // Update UI for all workers
+            if (this.config?.workers) {
+                this.config.workers.forEach(w => this.updateWorkerControls(w.id));
             }
         } catch (error) {
             this.debugLog(`Error loading managed workers: ${error}`);
@@ -2186,8 +2601,8 @@ class DistributedExtension {
         }
         
         // Ensure we check for string ID
-        const managedInfo = this.managedWorkers.get(String(workerId));
-        const status = this.workerStatuses.get(workerId);
+        const managedInfo = this.state.getWorker(workerId).managed;
+        const status = this.state.getWorkerStatus(workerId);
         
         // Update button states
         const buttons = controlsDiv.querySelectorAll('button');
@@ -2228,7 +2643,7 @@ class DistributedExtension {
     }
     
     async viewWorkerLog(workerId) {
-        const managedInfo = this.managedWorkers.get(String(workerId));
+        const managedInfo = this.state.getWorker(workerId).managed;
         if (!managedInfo?.log_file) return;
         
         const logBtn = document.getElementById(`log-${workerId}`);
@@ -2242,12 +2657,7 @@ class DistributedExtension {
         
         try {
             // Fetch log content
-            const response = await fetch(`${window.location.origin}/distributed/worker_log/${workerId}?lines=1000`);
-            if (!response.ok) {
-                throw new Error(`Failed to fetch log: ${response.statusText}`);
-            }
-            
-            const data = await response.json();
+            const data = await this.api.getWorkerLog(workerId, 1000);
             
             // Create modal dialog
             this.showLogModal(workerId, data);
@@ -2449,10 +2859,7 @@ class DistributedExtension {
         if (!logContent) return;
         
         try {
-            const response = await fetch(`${window.location.origin}/distributed/worker_log/${workerId}?lines=1000`);
-            if (!response.ok) throw new Error('Failed to fetch log');
-            
-            const data = await response.json();
+            const data = await this.api.getWorkerLog(workerId, 1000);
             
             // Update content
             const shouldAutoScroll = logContent.scrollTop + logContent.clientHeight >= logContent.scrollHeight - 50;
@@ -2483,21 +2890,6 @@ class DistributedExtension {
                     life: 3000
                 });
             }
-        }
-    }
-    
-    copyLogPath(logPath) {
-        if (navigator.clipboard) {
-            navigator.clipboard.writeText(logPath).then(() => {
-                app.extensionManager.toast.add({
-                    severity: "success",
-                    summary: "Path Copied",
-                    detail: "Log file path copied to clipboard",
-                    life: 2000
-                });
-            }).catch(err => {
-                this.debugLog('Failed to copy: ' + err.message);
-            });
         }
     }
     
@@ -2554,13 +2946,7 @@ class DistributedExtension {
     
     async detectMasterIP() {
         try {
-            const response = await fetch(`${window.location.origin}/distributed/network_info`);
-            if (!response.ok) {
-                this.debugLog("Failed to get network info");
-                return;
-            }
-            
-            const data = await response.json();
+            const data = await this.api.getNetworkInfo();
             this.log("Network info: " + JSON.stringify(data));
             
             // Store CUDA device info
@@ -2595,7 +2981,6 @@ class DistributedExtension {
                     
                     // Update config and save
                     this.config.workers = newWorkers;
-                    await this.saveConfig();
                     
                     // Refresh the panel if it's already open
                     const panel = document.getElementById("distributed-panel");
@@ -2695,8 +3080,8 @@ class DistributedExtension {
         
         if (!settingsDiv) return;
         
-        if (this.expandedWorkers.has(workerId)) {
-            this.expandedWorkers.delete(workerId);
+        if (this.state.isWorkerExpanded(workerId)) {
+            this.state.setWorkerExpanded(workerId, false);
             settingsDiv.classList.remove("expanded");
             if (settingsArrow) {
                 settingsArrow.style.transform = "rotate(0deg)";
@@ -2706,7 +3091,7 @@ class DistributedExtension {
             settingsDiv.style.marginTop = "0";
             settingsDiv.style.marginBottom = "0";
         } else {
-            this.expandedWorkers.add(workerId);
+            this.state.setWorkerExpanded(workerId, true);
             settingsDiv.classList.add("expanded");
             if (settingsArrow) {
                 settingsArrow.style.transform = "rotate(90deg)";
@@ -2835,26 +3220,8 @@ class DistributedExtension {
     }
     
     createFormGroup(label, value, id, type = "text", placeholder = "") {
-        const group = document.createElement("div");
-        group.style.cssText = "display: flex; align-items: center; gap: 8px;";
-        
-        const labelEl = document.createElement("label");
-        labelEl.textContent = label;
-        labelEl.style.cssText = "font-size: 12px; color: #ccc; width: 80px;";
-        
-        const input = document.createElement("input");
-        input.type = type;
-        input.id = id;
-        input.value = value;
-        if (placeholder) {
-            input.placeholder = placeholder;
-        }
-        input.style.cssText = "flex: 1; padding: 4px 8px; background: #2a2a2a; border: 1px solid #444; border-radius: 3px; color: #fff; font-size: 12px;";
-        
-        group.appendChild(labelEl);
-        group.appendChild(input);
-        
-        return group;
+        const result = this.ui.createFormGroup(label, value, id, type, placeholder);
+        return result.group;
     }
     
     async saveWorkerSettings(workerId) {
@@ -3130,7 +3497,7 @@ class DistributedExtension {
             });
             
             // Refresh UI and expand the new worker
-            this.expandedWorkers.add(newId);
+            this.state.setWorkerExpanded(newId, true);
             if (this.panelElement) {
                 this.renderSidebarContent(this.panelElement);
             }
