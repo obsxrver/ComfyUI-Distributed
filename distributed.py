@@ -95,6 +95,53 @@ async def get_network_info_endpoint(request):
     """Get network interfaces and recommend best IP for master."""
     import socket
     
+    # Get CUDA device if available
+    cuda_device = None
+    cuda_device_count = 0
+    physical_device_count = 0
+    
+    if torch.cuda.is_available():
+        try:
+            import os
+            import subprocess
+            
+            # Get visible device count (what PyTorch sees)
+            cuda_device_count = torch.cuda.device_count()
+            
+            # Try to get actual physical device info
+            cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+            
+            # Method 1: Parse CUDA_VISIBLE_DEVICES
+            if cuda_visible and cuda_visible.strip():
+                visible_devices = [int(d.strip()) for d in cuda_visible.split(',') if d.strip().isdigit()]
+                if visible_devices:
+                    # Get the first visible device as the actual physical device
+                    cuda_device = visible_devices[0]
+                    
+                    # Try to get total physical device count using nvidia-smi
+                    try:
+                        result = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'], 
+                                              capture_output=True, text=True, timeout=5)
+                        if result.returncode == 0:
+                            physical_device_count = len(result.stdout.strip().split('\n'))
+                        else:
+                            physical_device_count = max(visible_devices) + 1  # Best guess
+                    except:
+                        physical_device_count = max(visible_devices) + 1  # Best guess
+                else:
+                    cuda_device = 0
+                    physical_device_count = cuda_device_count
+            else:
+                # No CUDA_VISIBLE_DEVICES set, current device is actual device
+                cuda_device = torch.cuda.current_device()
+                physical_device_count = cuda_device_count
+                
+        except Exception as e:
+            debug_log(f"CUDA detection error: {e}")
+            cuda_device = None
+            cuda_device_count = 0
+            physical_device_count = 0
+    
     def get_network_ips():
         """Get all network IPs, trying multiple methods."""
         ips = []
@@ -195,6 +242,8 @@ async def get_network_info_endpoint(request):
             "hostname": hostname,
             "all_ips": all_ips,
             "recommended_ip": recommended_ip,
+            "cuda_device": cuda_device,
+            "cuda_device_count": physical_device_count if physical_device_count > 0 else cuda_device_count,
             "message": "Auto-detected network configuration"
         })
     except Exception as e:
@@ -347,6 +396,8 @@ async def update_master_endpoint(request):
             config['master'] = {}
         
         # Update all provided fields
+        if "name" in data:
+            config['master']['name'] = data['name']
         if "host" in data:
             config['master']['host'] = data['host']
         if "port" in data:
@@ -1340,14 +1391,7 @@ class DistributedCollectorNode:
             session = await get_client_session()
             url = f"{master_url}/distributed/job_complete"
             debug_log(f"Worker - Sending image to URL: {url}")
-            # Disable SSL verification for HTTPS URLs (temporary fix for tunnels)
-            ssl_context = None
-            if url.startswith('https://'):
-                import ssl
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-            async with session.post(url, data=data, ssl=ssl_context) as response:
+            async with session.post(url, data=data) as response:
                 response.raise_for_status()
         except Exception as e:
             log(f"Worker - Failed to send image {image_index+1} to master: {e}")

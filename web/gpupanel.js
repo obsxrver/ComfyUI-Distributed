@@ -75,12 +75,13 @@ class DistributedExtension {
         // Inject CSS for pulsing animation
         this.injectStyles();
 
-        this.loadConfig().then(() => {
+        this.loadConfig().then(async () => {
             this.registerSidebarTab();
             this.setupInterceptor();
             this.startStatusChecking();
             this.loadManagedWorkers();
-            this.detectMasterIP(); // Auto-detect master IP on startup
+            // Detect master IP after everything is set up
+            this.detectMasterIP();
         });
     }
     
@@ -120,7 +121,7 @@ class DistributedExtension {
             const response = await fetch(`${window.location.origin}/distributed/config`);
             if (response.ok) {
                 this.config = await response.json();
-                this.debugLog("Loaded config: " + JSON.stringify(this.config));
+                this.log("Loaded config: " + JSON.stringify(this.config));
             } else {
                 this.log("Failed to load config");
                 this.config = { workers: [], settings: {} };
@@ -143,6 +144,7 @@ class DistributedExtension {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ worker_id: workerId, enabled: enabled })
             });
+            
         } catch (error) {
             this.log("Error updating worker: " + error.message);
         }
@@ -211,7 +213,7 @@ class DistributedExtension {
         try {
             const targetsToInterrupt = this.enabledWorkers.map(w => ({ 
                 name: w.name, 
-                url: `http://${w.host || window.location.hostname}:${w.port}` 
+                url: this.getWorkerUrl(w)
             }));
             
             if (targetsToInterrupt.length === 0) {
@@ -266,7 +268,7 @@ class DistributedExtension {
         try {
             const urlsToClear = this.enabledWorkers.map(w => ({ 
                 name: w.name, 
-                url: `http://${w.host || window.location.hostname}:${w.port}` 
+                url: this.getWorkerUrl(w)
             }));
             
             if (urlsToClear.length === 0) {
@@ -324,7 +326,7 @@ class DistributedExtension {
     }
 
 
-    renderSidebarContent(el) {
+    async renderSidebarContent(el) {
         // Panel is being opened/rendered
         this.debugLog("Panel opened");
         
@@ -333,8 +335,19 @@ class DistributedExtension {
             return;
         }
         
-        // Store reference to the panel element
-        this.panelElement = el;
+        // Prevent infinite recursion
+        if (this._isRendering) {
+            this.debugLog("Already rendering, skipping");
+            return;
+        }
+        this._isRendering = true;
+        
+        try {
+            // Store reference to the panel element
+            this.panelElement = el;
+            
+            // Reload config when panel opens to pick up any external changes
+            await this.loadConfig();
         
         // Reload managed workers when panel opens
         this.loadManagedWorkers().then(() => {
@@ -349,20 +362,275 @@ class DistributedExtension {
         setTimeout(() => this.checkAllWorkerStatuses(), 0);
         
         el.innerHTML = '';
+        
+        // Create toolbar header to match ComfyUI style
+        const toolbar = document.createElement("div");
+        toolbar.className = "p-toolbar p-component border-x-0 border-t-0 rounded-none px-2 py-1 min-h-8";
+        toolbar.style.cssText = "border-bottom: 1px solid #444; background: transparent;";
+        
+        const toolbarStart = document.createElement("div");
+        toolbarStart.className = "p-toolbar-start";
+        
+        const titleSpan = document.createElement("span");
+        titleSpan.className = "text-xs 2xl:text-sm truncate";
+        titleSpan.textContent = "COMFYUI DISTRIBUTED";
+        titleSpan.title = "ComfyUI Distributed";
+        
+        toolbarStart.appendChild(titleSpan);
+        toolbar.appendChild(toolbarStart);
+        
+        const toolbarCenter = document.createElement("div");
+        toolbarCenter.className = "p-toolbar-center";
+        toolbar.appendChild(toolbarCenter);
+        
+        const toolbarEnd = document.createElement("div");
+        toolbarEnd.className = "p-toolbar-end";
+        toolbar.appendChild(toolbarEnd);
+        
+        el.appendChild(toolbar);
+        
+        // Main container with adjusted padding
         const container = document.createElement("div");
-        container.style.cssText = "padding: 15px; display: flex; flex-direction: column; height: 100%;";
+        container.style.cssText = "padding: 15px; display: flex; flex-direction: column; height: calc(100% - 32px);";
         
-        const title = document.createElement("h3");
-        title.textContent = "ComfyUI Distributed";
-        title.style.cssText = "margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 1px solid #444;";
-        container.appendChild(title);
+        // Detect master info on panel open (in case CUDA info wasn't available at startup)
+        this.log(`Panel opened. CUDA device count: ${this.cudaDeviceCount}, Workers: ${this.config?.workers?.length || 0}`);
+        if (!this.cudaDeviceCount) {
+            await this.detectMasterIP();
+        }
         
+        // Check if we should auto-populate workers after detection
+        if (this.cudaDeviceCount > 0 && (!this.config.workers || this.config.workers.length === 0)) {
+            this.log(`Auto-populating workers based on ${this.cudaDeviceCount} CUDA devices (excluding master on CUDA ${this.masterCudaDevice})`);
+            
+            const newWorkers = [];
+            let workerNum = 1;
+            let portOffset = 0;
+            
+            for (let i = 0; i < this.cudaDeviceCount; i++) {
+                // Skip the CUDA device used by master
+                if (i === this.masterCudaDevice) {
+                    this.log(`Skipping CUDA ${i} (used by master)`);
+                    continue;
+                }
+                
+                const worker = {
+                    id: Date.now() + i,
+                    name: `Worker ${workerNum}`,
+                    host: "localhost",
+                    port: 8189 + portOffset,
+                    cuda_device: i,
+                    enabled: true
+                };
+                newWorkers.push(worker);
+                workerNum++;
+                portOffset++;
+            }
+            
+            // Only proceed if we have workers to add
+            if (newWorkers.length > 0) {
+                this.log(`Auto-populating ${newWorkers.length} workers`);
+                
+                // Add workers to config
+                this.config.workers = newWorkers;
+                
+                // Save each worker using the update endpoint
+                for (const worker of newWorkers) {
+                    try {
+                        const response = await fetch(`${window.location.origin}/distributed/config/update_worker`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                worker_id: worker.id,
+                                ...worker
+                            })
+                        });
+                        
+                        if (!response.ok) {
+                            this.log(`Failed to save worker ${worker.name}`);
+                        }
+                    } catch (error) {
+                        this.log(`Error saving worker ${worker.name}: ${error.message}`);
+                    }
+                }
+                
+                this.log(`Auto-populated ${newWorkers.length} workers and saved config`);
+                
+                // Reload the config to include the new workers
+                await this.loadConfig();
+                
+                // Continue rendering with the updated config
+            } else {
+                this.log("No additional CUDA devices available for workers (all used by master)");
+            }
+        }
+        
+        // Master Node Section - styled exactly like a worker card
+        const masterDiv = document.createElement("div");
+        masterDiv.style.cssText = "margin-bottom: 12px; background: #2a2a2a; border-radius: 4px; overflow: hidden; display: flex;";
+        
+        // Left column - checkbox area (always checked and disabled)
+        const checkboxColumn = document.createElement("div");
+        checkboxColumn.style.cssText = "flex: 0 0 40px; display: flex; align-items: center; justify-content: center; border-right: 1px solid #444; cursor: default;";
+        checkboxColumn.title = "Master node is always enabled";
+        
+        // Greyed out checkbox that's always checked
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = true;
+        checkbox.disabled = true;
+        checkbox.style.cssText = "cursor: default; width: 16px; height: 16px; opacity: 0.6;";
+        
+        checkboxColumn.appendChild(checkbox);
+        
+        // Right column - content area
+        const contentColumn = document.createElement("div");
+        contentColumn.style.cssText = "flex: 1; display: flex; flex-direction: column; transition: background-color 0.2s ease;";
+        
+        // First row: master info
+        const infoRow = document.createElement("div");
+        infoRow.style.cssText = "display: flex; align-items: center; padding: 8px; cursor: pointer; min-height: 60px;";
+        infoRow.title = "Click to expand settings";
+        
+        // Worker content
+        const workerContent = document.createElement("div");
+        workerContent.style.cssText = "display: flex; align-items: center; gap: 8px; flex: 1;";
+        
+        const statusDot = document.createElement("span");
+        statusDot.id = "master-status";
+        statusDot.style.cssText = "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: #4CAF50;";
+        statusDot.title = "Online";
+        
+        const gpuInfo = document.createElement("span");
+        const cudaInfo = this.masterCudaDevice !== undefined ? `CUDA ${this.masterCudaDevice} • ` : '';
+        const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+        gpuInfo.innerHTML = `<strong id="master-name-display">${this.config?.master?.name || "Master"}</strong><br><small style="color: #888;"><span id="master-cuda-info">${cudaInfo}Port ${port}</span></small>`;
+        
+        workerContent.appendChild(statusDot);
+        workerContent.appendChild(gpuInfo);
+        
+        // Settings arrow
+        const settingsArrow = document.createElement("span");
+        settingsArrow.className = "settings-arrow";
+        settingsArrow.innerHTML = "▶";
+        settingsArrow.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease; margin-left: auto;";
+        
+        infoRow.appendChild(workerContent);
+        infoRow.appendChild(settingsArrow);
+        
+        // Click handler for info row
+        let masterSettingsExpanded = false;
+        infoRow.onclick = () => {
+            masterSettingsExpanded = !masterSettingsExpanded;
+            if (masterSettingsExpanded) {
+                masterSettingsDiv.classList.add("expanded");
+                masterSettingsDiv.style.padding = "12px";
+                masterSettingsDiv.style.marginTop = "8px";
+                masterSettingsDiv.style.marginBottom = "8px";
+                settingsArrow.style.transform = "rotate(90deg)";
+            } else {
+                masterSettingsDiv.classList.remove("expanded");
+                masterSettingsDiv.style.padding = "0 12px";
+                masterSettingsDiv.style.marginTop = "0";
+                masterSettingsDiv.style.marginBottom = "0";
+                settingsArrow.style.transform = "rotate(0deg)";
+            }
+        };
+        
+        // Hover effect for entire content column
+        contentColumn.onmouseover = () => {
+            contentColumn.style.backgroundColor = "#333";
+            settingsArrow.style.color = "#fff";
+        };
+        contentColumn.onmouseout = () => {
+            contentColumn.style.backgroundColor = "transparent";
+            settingsArrow.style.color = "#888";
+        };
+        
+        contentColumn.appendChild(infoRow);
+        
+        // Second row: master controls (styled like remote worker)
+        const controlsDiv = document.createElement("div");
+        controlsDiv.style.cssText = "padding: 0 8px 6px 8px; display: flex; gap: 4px;";
+        
+        // Master info box styled like remote worker
+        const masterInfo = document.createElement("div");
+        masterInfo.style.cssText = "background-color: #333; color: #888; padding: 4px 12px; border-radius: 4px; font-size: 11px; text-align: center; flex: 1;";
+        masterInfo.textContent = "Master";
+        controlsDiv.appendChild(masterInfo);
+        
+        // Third row: expandable settings panel
+        const masterSettingsDiv = document.createElement("div");
+        masterSettingsDiv.id = "master-settings";
+        masterSettingsDiv.className = "worker-settings";
+        masterSettingsDiv.style.cssText = "margin: 0 8px; padding: 0 12px; background: #1e1e1e; border-radius: 4px;";
+        
+        // Create settings form using reusable components
+        const settingsForm = document.createElement("div");
+        settingsForm.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
+        
+        // Name field - reuse createFormGroup
+        const nameGroup = this.createFormGroup("Name:", this.config?.master?.name || "Master", "master-name");
+        settingsForm.appendChild(nameGroup);
+        
+        // Host field
+        const hostGroup = this.createFormGroup("Host:", this.config?.master?.host || "", "master-host", "text", "Auto-detect if empty");
+        settingsForm.appendChild(hostGroup);
+        
+        // Buttons row - using same style as workers
+        const buttonGroup = document.createElement("div");
+        buttonGroup.style.cssText = "display: flex; gap: 8px; margin-top: 8px;";
+        
+        const saveBtn = this._createButton("Save", 
+            async () => {
+            const nameInput = document.getElementById('master-name');
+            const hostInput = document.getElementById('master-host');
+            
+            // Update config
+            if (!this.config.master) this.config.master = {};
+            this.config.master.name = nameInput.value.trim() || "Master";
+            
+            // Save both host and name
+            await this.saveMasterConfig({
+                host: hostInput.value.trim(),
+                name: this.config.master.name
+            });
+            
+            // Update display
+            document.getElementById('master-name-display').textContent = this.config.master.name;
+            this.updateMasterDisplay();
+            
+            saveBtn.textContent = "Saved!";
+            setTimeout(() => { saveBtn.textContent = "Save"; }, 2000);
+        },
+        "background-color: #4a7c4a;");
+        saveBtn.style.cssText += " padding: 6px 12px; font-size: 12px;";
+        
+        const cancelBtn = this._createButton("Cancel", 
+            () => {
+                // Reset inputs to original values
+                document.getElementById('master-name').value = this.config?.master?.name || "Master";
+                document.getElementById('master-host').value = this.config?.master?.host || "";
+            },
+            "background-color: #555;");
+        cancelBtn.style.cssText += " padding: 6px 12px; font-size: 12px;";
+        
+        buttonGroup.appendChild(saveBtn);
+        buttonGroup.appendChild(cancelBtn);
+        
+        settingsForm.appendChild(buttonGroup);
+        masterSettingsDiv.appendChild(settingsForm);
+        
+        contentColumn.appendChild(controlsDiv);
+        contentColumn.appendChild(masterSettingsDiv);
+        
+        masterDiv.appendChild(checkboxColumn);
+        masterDiv.appendChild(contentColumn);
+        container.appendChild(masterDiv);
+        
+        // Workers Section (no heading)
         const gpuSection = document.createElement("div");
         gpuSection.style.cssText = "flex: 1; overflow-y: auto; margin-bottom: 15px;";
-        const gpuTitle = document.createElement("h4");
-        gpuTitle.textContent = "Available Workers";
-        gpuTitle.style.cssText = "margin: 0 0 10px 0; font-size: 14px;";
-        gpuSection.appendChild(gpuTitle);
         
         const gpuList = document.createElement("div");
         const workers = this.config?.workers || [];
@@ -687,23 +955,23 @@ class DistributedExtension {
         const settingsHeader = document.createElement("div");
         settingsHeader.style.cssText = "display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none;";
         
-        const settingsTitle = document.createElement("h4");
-        settingsTitle.textContent = "Settings";
-        settingsTitle.style.cssText = "margin: 0; font-size: 14px;";
+        const workerSettingsTitle = document.createElement("h4");
+        workerSettingsTitle.textContent = "Settings";
+        workerSettingsTitle.style.cssText = "margin: 0; font-size: 14px;";
         
-        const settingsToggle = document.createElement("span");
-        settingsToggle.textContent = "▶"; // Right arrow when collapsed
-        settingsToggle.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease;";
+        const workerSettingsToggle = document.createElement("span");
+        workerSettingsToggle.textContent = "▶"; // Right arrow when collapsed
+        workerSettingsToggle.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease;";
         
-        settingsHeader.appendChild(settingsTitle);
-        settingsHeader.appendChild(settingsToggle);
+        settingsHeader.appendChild(workerSettingsTitle);
+        settingsHeader.appendChild(workerSettingsToggle);
         
         // Hover effect for header
         settingsHeader.onmouseover = () => {
-            settingsToggle.style.color = "#fff";
+            workerSettingsToggle.style.color = "#fff";
         };
         settingsHeader.onmouseout = () => {
-            settingsToggle.style.color = "#888";
+            workerSettingsToggle.style.color = "#888";
         };
         
         // Collapsible settings content
@@ -719,10 +987,10 @@ class DistributedExtension {
             settingsExpanded = !settingsExpanded;
             if (settingsExpanded) {
                 settingsContent.style.maxHeight = "200px";
-                settingsToggle.style.transform = "rotate(90deg)";
+                workerSettingsToggle.style.transform = "rotate(90deg)";
             } else {
                 settingsContent.style.maxHeight = "0";
-                settingsToggle.style.transform = "rotate(0deg)";
+                workerSettingsToggle.style.transform = "rotate(0deg)";
             }
         };
         
@@ -798,6 +1066,29 @@ class DistributedExtension {
         container.appendChild(summarySection);
         el.appendChild(container);
         this.updateSummary();
+        } finally {
+            // Always reset the rendering flag
+            this._isRendering = false;
+        }
+    }
+
+    updateMasterDisplay() {
+        // Update CUDA info if element exists
+        const cudaInfo = document.getElementById('master-cuda-info');
+        if (cudaInfo) {
+            const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+            if (this.masterCudaDevice !== undefined && this.masterCudaDevice !== null) {
+                cudaInfo.textContent = `CUDA ${this.masterCudaDevice} • Port ${port}`;
+            } else {
+                cudaInfo.textContent = `Port ${port}`;
+            }
+        }
+        
+        // Update name if changed
+        const nameDisplay = document.getElementById('master-name-display');
+        if (nameDisplay && this.config?.master?.name) {
+            nameDisplay.textContent = this.config.master.name;
+        }
     }
 
     updateSummary() {
@@ -1314,6 +1605,9 @@ class DistributedExtension {
     }
     
     async checkAllWorkerStatuses() {
+        // Check master status
+        this.checkMasterStatus();
+        
         if (!this.config || !this.config.workers) return;
         
         for (const worker of this.config.workers) {
@@ -1324,23 +1618,57 @@ class DistributedExtension {
         }
     }
     
-    async checkWorkerStatus(worker) {
+    async checkMasterStatus() {
+        try {
+            const response = await fetch(`${window.location.origin}/prompt`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(900)
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                const queueRemaining = data.exec_info?.queue_remaining || 0;
+                const isProcessing = queueRemaining > 0;
+                
+                // Update master status dot
+                const statusDot = document.getElementById('master-status');
+                if (statusDot) {
+                    if (isProcessing) {
+                        statusDot.style.backgroundColor = "#f0ad4e";
+                        statusDot.title = `Processing (${queueRemaining} in queue)`;
+                    } else {
+                        statusDot.style.backgroundColor = "#4CAF50";
+                        statusDot.title = "Online";
+                    }
+                }
+            }
+        } catch (error) {
+            // Master is always online (we're running on it), so keep it green
+            const statusDot = document.getElementById('master-status');
+            if (statusDot) {
+                statusDot.style.backgroundColor = "#4CAF50";
+                statusDot.title = "Online";
+            }
+        }
+    }
+    
+    // Helper to build worker URL
+    getWorkerUrl(worker, endpoint = '') {
         const host = worker.host || window.location.hostname;
         
-        // Detect if we should use HTTPS based on hostname or port
-        const useHttps = host.includes('trycloudflare.com') || 
-                         host.includes('ngrok') || 
-                         host.includes('.ts.net') ||
-                         worker.port === 443;
-        
+        // Simple rule: port 443 = HTTPS, anything else = HTTP
+        const useHttps = worker.port === 443;
         const protocol = useHttps ? 'https' : 'http';
         
         // Don't add port for standard HTTPS/HTTP ports
         const defaultPort = useHttps ? 443 : 80;
         const port = worker.port === defaultPort ? '' : `:${worker.port}`;
         
-        const url = `${protocol}://${host}${port}/prompt`;
-        
+        return `${protocol}://${host}${port}${endpoint}`;
+    }
+
+    async checkWorkerStatus(worker) {
+        const url = this.getWorkerUrl(worker, '/prompt');
         const statusDot = document.getElementById(`status-${worker.id}`);
         
         try {
@@ -1401,21 +1729,7 @@ class DistributedExtension {
     }
     
     async _dispatchToWorker(worker, prompt, workflow, imageReferences) {
-        const host = worker.host || "localhost";
-        
-        // Detect if we should use HTTPS based on hostname or port  
-        const useHttps = host.includes('trycloudflare.com') || 
-                         host.includes('ngrok') || 
-                         host.includes('.ts.net') ||
-                         worker.port === 443;
-        
-        const protocol = useHttps ? 'https' : 'http';
-        
-        // Don't add port for standard HTTPS/HTTP ports
-        const defaultPort = useHttps ? 443 : 80;
-        const port = worker.port === defaultPort ? '' : `:${worker.port}`;
-        
-        const workerUrl = `${protocol}://${host}${port}`;
+        const workerUrl = this.getWorkerUrl(worker);
         
         // Debug logging - always log to console for debugging
         console.log(`[Distributed] === Dispatching to ${worker.name} (${worker.id}) ===`);
@@ -1577,21 +1891,7 @@ class DistributedExtension {
         const startTime = Date.now();
         
         const checkPromises = workers.map(async (worker) => {
-            const host = worker.host || "localhost";
-            
-            // Detect if we should use HTTPS based on hostname or port
-            const useHttps = host.includes('trycloudflare.com') || 
-                             host.includes('ngrok') || 
-                             host.includes('.ts.net') ||
-                             worker.port === 443;
-            
-            const protocol = useHttps ? 'https' : 'http';
-            
-            // Don't add port for standard HTTPS/HTTP ports
-            const defaultPort = useHttps ? 443 : 80;
-            const port = worker.port === defaultPort ? '' : `:${worker.port}`;
-            
-            const url = `${protocol}://${host}${port}/prompt`;
+            const url = this.getWorkerUrl(worker, '/prompt');
             
             this.debugLog(`Pre-flight checking ${worker.name} at: ${url}`);
             
@@ -2215,13 +2515,29 @@ class DistributedExtension {
     getMasterUrl() {
         // Always use the detected/configured master IP for consistency
         if (this.config?.master?.host) {
-            const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-            // For standard ports, don't include them in the URL
-            if ((window.location.protocol === 'https:' && port === '443') || 
-                (window.location.protocol === 'http:' && port === '80')) {
-                return `${window.location.protocol}//${this.config.master.host}`;
+            const configuredHost = this.config.master.host;
+            
+            // If the configured host already includes protocol, use as-is
+            if (configuredHost.startsWith('http://') || configuredHost.startsWith('https://')) {
+                return configuredHost;
             }
-            return `${window.location.protocol}//${this.config.master.host}:${port}`;
+            
+            // For domain names (not IPs), default to HTTPS
+            const isIP = /^(\d{1,3}\.){3}\d{1,3}$/.test(configuredHost);
+            const isLocalhost = configuredHost === 'localhost' || configuredHost === '127.0.0.1';
+            
+            if (!isIP && !isLocalhost && configuredHost.includes('.')) {
+                // It's a domain name, use HTTPS
+                return `https://${configuredHost}`;
+            } else {
+                // For IPs and localhost, use current access method
+                const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+                if ((window.location.protocol === 'https:' && port === '443') || 
+                    (window.location.protocol === 'http:' && port === '80')) {
+                    return `${window.location.protocol}//${configuredHost}`;
+                }
+                return `${window.location.protocol}//${configuredHost}:${port}`;
+            }
         }
         
         // If no master IP is set but we're on a network address, use it
@@ -2245,7 +2561,49 @@ class DistributedExtension {
             }
             
             const data = await response.json();
-            this.debugLog("Network info: " + JSON.stringify(data));
+            this.log("Network info: " + JSON.stringify(data));
+            
+            // Store CUDA device info
+            if (data.cuda_device !== null && data.cuda_device !== undefined) {
+                this.masterCudaDevice = data.cuda_device;
+                // Update the master display with CUDA info
+                this.updateMasterDisplay();
+            }
+            
+            // Store CUDA device count for auto-population
+            if (data.cuda_device_count > 0) {
+                this.cudaDeviceCount = data.cuda_device_count;
+                this.log(`Detected ${this.cudaDeviceCount} CUDA devices`);
+                
+                // Auto-populate workers if none exist
+                this.log(`Current workers: ${this.config.workers ? this.config.workers.length : 'null'}`);
+                if (!this.config.workers || this.config.workers.length === 0) {
+                    this.log(`Auto-populating ${this.cudaDeviceCount} workers based on CUDA devices`);
+                    
+                    const newWorkers = [];
+                    for (let i = 0; i < this.cudaDeviceCount; i++) {
+                        const worker = {
+                            id: Date.now() + i,
+                            name: `Worker ${i + 1}`,
+                            host: "localhost",
+                            port: 8189 + i,
+                            cuda_device: i,
+                            enabled: true
+                        };
+                        newWorkers.push(worker);
+                    }
+                    
+                    // Update config and save
+                    this.config.workers = newWorkers;
+                    await this.saveConfig();
+                    
+                    // Refresh the panel if it's already open
+                    const panel = document.getElementById("distributed-panel");
+                    if (panel) {
+                        this.renderSidebarContent(panel);
+                    }
+                }
+            }
             
             // Check if we already have a master host configured
             if (this.config?.master?.host) {
@@ -2258,7 +2616,7 @@ class DistributedExtension {
                 this.log(`Auto-detected master IP: ${data.recommended_ip}`);
                 
                 // Save the detected IP (pass true to suppress notification)
-                await this.saveMasterIp(data.recommended_ip, true);
+                await this.saveMasterConfig({ host: data.recommended_ip }, true);
                 
                 // Show a single combined notification
                 if (app.extensionManager?.toast) {
@@ -2275,14 +2633,12 @@ class DistributedExtension {
         }
     }
     
-    async saveMasterIp(masterIp, suppressNotification = false) {
+    async saveMasterConfig(updates, suppressNotification = false) {
         try {
             const response = await fetch(`${window.location.origin}/distributed/config/update_master`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    host: masterIp.trim()
-                })
+                body: JSON.stringify(updates)
             });
             
             if (response.ok) {
@@ -2290,7 +2646,8 @@ class DistributedExtension {
                 if (!this.config.master) {
                     this.config.master = {};
                 }
-                this.config.master.host = masterIp.trim();
+                // Update all provided fields
+                Object.assign(this.config.master, updates);
                 
                 // Only show notification if not suppressed
                 if (!suppressNotification) {
@@ -2459,6 +2816,24 @@ class DistributedExtension {
         return form;
     }
     
+    createSettingsToggle() {
+        const settingsRow = document.createElement("div");
+        settingsRow.style.cssText = "display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer; user-select: none;";
+        
+        const settingsTitle = document.createElement("h4");
+        settingsTitle.textContent = "Settings";
+        settingsTitle.style.cssText = "margin: 0; font-size: 14px;";
+        
+        const settingsToggle = document.createElement("span");
+        settingsToggle.textContent = "▶"; // Right arrow when collapsed
+        settingsToggle.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease;";
+        
+        settingsRow.appendChild(settingsToggle);
+        settingsRow.appendChild(settingsTitle);
+        
+        return { settingsRow, settingsToggle };
+    }
+    
     createFormGroup(label, value, id, type = "text", placeholder = "") {
         const group = document.createElement("div");
         group.style.cssText = "display: flex; align-items: center; gap: 8px;";
@@ -2519,7 +2894,7 @@ class DistributedExtension {
             app.extensionManager.toast.add({
                 severity: "error",
                 summary: "Validation Error",
-                detail: "Port must be between 1024 and 65535",
+                detail: "Port must be between 1 and 65535",
                 life: 3000
             });
             return;
@@ -2695,6 +3070,11 @@ class DistributedExtension {
                 life: 5000
             });
         }
+    }
+    
+    // Backward compatibility wrapper
+    async saveMasterIp(masterIp, suppressNotification = false) {
+        return this.saveMasterConfig({ host: masterIp.trim() }, suppressNotification);
     }
     
     async addNewWorker() {
