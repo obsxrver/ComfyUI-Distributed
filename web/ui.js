@@ -1,0 +1,997 @@
+import { BUTTON_STYLES, UI_STYLES, STATUS_COLORS } from './constants.js';
+
+const cardConfigs = {
+    master: {
+        checkbox: { 
+            enabled: false, 
+            checked: true, 
+            disabled: true, 
+            opacity: 0.6, 
+            title: "Master node is always enabled" 
+        },
+        statusDot: { 
+            color: STATUS_COLORS.ONLINE_GREEN,
+            title: 'Online',
+            id: 'master-status',
+            dynamic: true
+        },
+        infoText: (data, extension) => {
+            const cudaDevice = extension.config?.master?.cuda_device ?? extension.masterCudaDevice;
+            const cudaInfo = cudaDevice !== undefined ? `CUDA ${cudaDevice} • ` : '';
+            const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+            return `<strong id="master-name-display">${data?.name || extension.config?.master?.name || "Master"}</strong><br><small style="color: #888;"><span id="master-cuda-info">${cudaInfo}Port ${port}</span></small>`;
+        },
+        controls: { 
+            type: 'info', 
+            text: 'Master', 
+            style: "background-color: #333; color: #999;" 
+        },
+        settings: { 
+            formType: 'master', 
+            id: 'master-settings',
+            expandedTracker: 'masterSettingsExpanded'
+        },
+        hover: true,
+        expand: true,
+        border: 'solid'
+    },
+    worker: {
+        checkbox: { 
+            enabled: true, 
+            title: "Enable/disable this worker" 
+        },
+        statusDot: { 
+            dynamic: true,
+            initialColor: (data) => data.enabled ? STATUS_COLORS.OFFLINE_RED : STATUS_COLORS.DISABLED_GRAY,
+            initialTitle: (data) => data.enabled ? "Checking status..." : "Disabled",
+            pulsing: (data) => data.enabled,
+            id: (data) => `status-${data.id}`
+        },
+        infoText: (data, extension) => {
+            const isRemote = extension.isRemoteWorker(data);
+            if (isRemote) {
+                return `<strong>${data.name}</strong><br><small style="color: #888;">${data.host}:${data.port}</small>`;
+            } else {
+                const cudaInfo = data.cuda_device !== undefined ? `CUDA ${data.cuda_device} • ` : '';
+                return `<strong>${data.name}</strong><br><small style="color: #888;">${cudaInfo}Port ${data.port}</small>`;
+            }
+        },
+        controls: { 
+            dynamic: true 
+        },
+        settings: { 
+            formType: 'worker',
+            id: (data) => `settings-${data.id}`,
+            expandedId: (data) => data?.id
+        },
+        hover: true,
+        expand: true,
+        border: 'solid'
+    },
+    blueprint: {
+        checkbox: { 
+            type: 'icon', 
+            content: '+', 
+            width: 42,
+            style: 'border-right: 2px dashed #555; color: #777; font-size: 24px; font-weight: 500;' 
+        },
+        statusDot: { 
+            color: 'transparent', 
+            border: '1px solid #555' 
+        },
+        infoText: () => `<strong style="color: #aaa; font-size: 16px;">Add New Worker</strong><br><small style="color: #555;">[CUDA] • [Port]</small>`,
+        controls: { 
+            type: 'ghost', 
+            text: 'Configure', 
+            style: 'border: 1px solid #444; background: transparent; color: #555;' 
+        },
+        hover: 'placeholder',
+        expand: false,
+        border: 'dashed'
+    },
+    add: {
+        checkbox: { 
+            type: 'icon', 
+            content: '+',
+            width: 43,
+            style: 'border-right: 1px dashed #444; color: #555; font-size: 18px;' 
+        },
+        statusDot: { 
+            color: 'transparent', 
+            border: '1px solid #555' 
+        },
+        infoText: () => `<span style="color: #666; font-weight: bold; font-size: 13px;">Add New Worker</span>`,
+        controls: null,
+        hover: 'placeholder',
+        expand: false,
+        border: 'dashed',
+        minHeight: '48px'
+    }
+};
+
+export class DistributedUI {
+    constructor() {
+        // UI element styles
+        this.styles = UI_STYLES;
+    }
+
+    createStatusDot(id, color = "#666", title = "Status") {
+        const dot = document.createElement("span");
+        if (id) dot.id = id;
+        dot.style.cssText = this.styles.statusDot + ` background-color: ${color};`;
+        dot.title = title;
+        return dot;
+    }
+
+    createButton(text, onClick, customStyle = "") {
+        const button = document.createElement("button");
+        button.textContent = text;
+        button.className = "distributed-button";
+        button.style.cssText = BUTTON_STYLES.base + customStyle;
+        if (onClick) button.onclick = onClick;
+        return button;
+    }
+
+    createButtonGroup(buttons, style = "") {
+        const group = document.createElement("div");
+        group.style.cssText = "display: flex; gap: 4px; margin-top: 10px;" + style;
+        buttons.forEach(button => group.appendChild(button));
+        return group;
+    }
+
+    createWorkerControls(workerId, handlers = {}) {
+        const controlsDiv = document.createElement("div");
+        controlsDiv.id = `controls-${workerId}`;
+        controlsDiv.style.cssText = this.styles.controlsDiv;
+        
+        const buttons = [];
+        
+        if (handlers.launch) {
+            const launchBtn = this.createButton('Launch', handlers.launch);
+            launchBtn.id = `launch-${workerId}`;
+            launchBtn.title = "Launch this worker instance";
+            buttons.push(launchBtn);
+        }
+        
+        if (handlers.stop) {
+            const stopBtn = this.createButton('Stop', handlers.stop);
+            stopBtn.id = `stop-${workerId}`;
+            stopBtn.title = "Stop this worker instance";
+            buttons.push(stopBtn);
+        }
+        
+        if (handlers.viewLog) {
+            const logBtn = this.createButton('View Log', handlers.viewLog);
+            logBtn.id = `log-${workerId}`;
+            logBtn.title = "View worker log file";
+            buttons.push(logBtn);
+        }
+        
+        buttons.forEach(btn => controlsDiv.appendChild(btn));
+        return controlsDiv;
+    }
+
+    createFormGroup(label, value, id, type = "text", placeholder = "") {
+        const group = document.createElement("div");
+        group.style.cssText = this.styles.formGroup;
+        
+        const labelEl = document.createElement("label");
+        labelEl.textContent = label;
+        labelEl.htmlFor = id;
+        labelEl.style.cssText = this.styles.formLabel;
+        
+        const input = document.createElement("input");
+        input.type = type;
+        input.id = id;
+        input.value = value;
+        input.placeholder = placeholder;
+        input.style.cssText = this.styles.formInput;
+        
+        group.appendChild(labelEl);
+        group.appendChild(input);
+        return { group, input };
+    }
+
+
+    createInfoBox(text) {
+        const box = document.createElement("div");
+        box.style.cssText = this.styles.infoBox;
+        box.textContent = text;
+        return box;
+    }
+
+    addHoverEffect(element, onHover, onLeave) {
+        element.onmouseover = onHover;
+        element.onmouseout = onLeave;
+    }
+
+    createCard(type = 'worker', options = {}) {
+        const card = document.createElement("div");
+        const baseStyle = "margin-bottom: 12px; border-radius: 6px; overflow: hidden; display: flex;";
+        
+        switch(type) {
+            case 'master':
+            case 'worker':
+                card.style.cssText = baseStyle + "background: #2a2a2a;";
+                break;
+            case 'blueprint':
+                card.style.cssText = baseStyle + "border: 2px dashed #555; cursor: pointer; transition: all 0.2s ease; background: rgba(255, 255, 255, 0.02);";
+                if (options.onClick) card.onclick = options.onClick;
+                if (options.title) card.title = options.title;
+                break;
+            case 'add':
+                card.style.cssText = baseStyle + "border: 1px dashed #444; cursor: pointer; transition: all 0.2s ease; background: transparent;";
+                if (options.onClick) card.onclick = options.onClick;
+                if (options.title) card.title = options.title;
+                break;
+        }
+        
+        if (options.onMouseEnter) {
+            card.addEventListener('mouseenter', options.onMouseEnter);
+        }
+        if (options.onMouseLeave) {
+            card.addEventListener('mouseleave', options.onMouseLeave);
+        }
+        
+        return card;
+    }
+
+    createCardColumn(type = 'checkbox', options = {}) {
+        const column = document.createElement("div");
+        const baseStyle = "display: flex; align-items: center; justify-content: center;";
+        
+        switch(type) {
+            case 'checkbox':
+                column.style.cssText = baseStyle + "flex: 0 0 44px; border-right: 1px solid #3a3a3a; cursor: default; background: rgba(0,0,0,0.1);";
+                if (options.title) column.title = options.title;
+                break;
+            case 'icon':
+                column.style.cssText = baseStyle + "width: 44px; flex-shrink: 0; font-size: 20px; color: #666;";
+                break;
+            case 'content':
+                column.style.cssText = "flex: 1; display: flex; flex-direction: column; transition: background-color 0.2s ease;";
+                break;
+        }
+        
+        return column;
+    }
+
+    createInfoRow(options = {}) {
+        const row = document.createElement("div");
+        row.style.cssText = "display: flex; align-items: center; padding: 12px; cursor: pointer; min-height: 64px;";
+        if (options.onClick) row.onclick = options.onClick;
+        return row;
+    }
+
+    createWorkerContent() {
+        const content = document.createElement("div");
+        content.style.cssText = "display: flex; align-items: center; gap: 10px; flex: 1;";
+        return content;
+    }
+
+    createSettingsForm(fields = [], options = {}) {
+        const form = document.createElement("div");
+        form.style.cssText = "display: flex; flex-direction: column; gap: 10px;";
+        
+        fields.forEach(field => {
+            if (field.type === 'checkbox') {
+                const group = document.createElement("div");
+                group.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 5px 0;";
+                
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.id = field.id;
+                checkbox.checked = field.checked || false;
+                if (field.onChange) checkbox.onchange = field.onChange;
+                
+                const label = document.createElement("label");
+                label.htmlFor = field.id;
+                label.textContent = field.label;
+                label.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
+                
+                group.appendChild(checkbox);
+                group.appendChild(label);
+                form.appendChild(group);
+            } else {
+                const result = this.createFormGroup(field.label, field.value, field.id, field.type, field.placeholder);
+                if (field.groupId) result.group.id = field.groupId;
+                if (field.display) result.group.style.display = field.display;
+                form.appendChild(result.group);
+            }
+        });
+        
+        if (options.buttons) {
+            const buttonGroup = this.createButtonGroup(options.buttons, options.buttonStyle || " margin-top: 8px;");
+            form.appendChild(buttonGroup);
+        }
+        
+        return form;
+    }
+
+
+    createButtonHelper(text, onClick, style) {
+        return this.createButton(text, onClick, style);
+    }
+
+    updateMasterDisplay(extension) {
+        // Use persistent config value as fallback
+        const cudaDevice = extension?.config?.master?.cuda_device ?? extension?.masterCudaDevice;
+        
+        // Update CUDA info if element exists
+        const cudaInfo = document.getElementById('master-cuda-info');
+        if (cudaInfo) {
+            const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+            if (cudaDevice !== undefined && cudaDevice !== null) {
+                cudaInfo.textContent = `CUDA ${cudaDevice} • Port ${port}`;
+            } else {
+                cudaInfo.textContent = `Port ${port}`;
+            }
+        }
+        
+        // Update name if changed
+        const nameDisplay = document.getElementById('master-name-display');
+        if (nameDisplay && extension?.config?.master?.name) {
+            nameDisplay.textContent = extension.config.master.name;
+        }
+    }
+
+    showToast(app, severity, summary, detail, life = 3000) {
+        if (app.extensionManager?.toast?.add) {
+            app.extensionManager.toast.add({ severity, summary, detail, life });
+        }
+    }
+
+    updateStatusDot(workerId, color, title, pulsing = false) {
+        const statusDot = document.getElementById(`status-${workerId}`);
+        if (!statusDot) return;
+        
+        statusDot.style.backgroundColor = color;
+        statusDot.title = title;
+        statusDot.classList.toggle('status-pulsing', pulsing);
+    }
+
+    showLogModal(extension, workerId, logData) {
+        // Remove any existing modal
+        const existingModal = document.getElementById('distributed-log-modal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+        
+        const worker = extension.config.workers.find(w => w.id === workerId);
+        const workerName = worker?.name || `Worker ${workerId}`;
+        
+        // Create modal container
+        const modal = document.createElement('div');
+        modal.id = 'distributed-log-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        `;
+        
+        // Create modal content
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: #1e1e1e;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 1200px;
+            height: 80%;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #444;
+        `;
+        
+        // Header
+        const header = document.createElement('div');
+        header.style.cssText = `
+            padding: 15px 20px;
+            border-bottom: 1px solid #444;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        `;
+        
+        const title = document.createElement('h3');
+        title.textContent = `${workerName} - Log Viewer`;
+        title.style.cssText = 'margin: 0; color: #fff;';
+        
+        const headerButtons = document.createElement('div');
+        headerButtons.style.cssText = 'display: flex; gap: 20px; align-items: center;';
+        
+        // Auto-refresh container
+        const refreshContainer = document.createElement('div');
+        refreshContainer.style.cssText = 'display: flex; align-items: center; gap: 4px;';
+        
+        // Auto-refresh checkbox
+        const refreshCheckbox = document.createElement('input');
+        refreshCheckbox.type = 'checkbox';
+        refreshCheckbox.id = 'log-auto-refresh';
+        refreshCheckbox.checked = true; // Enabled by default
+        refreshCheckbox.style.cssText = 'cursor: pointer;';
+        refreshCheckbox.onchange = (e) => {
+            if (e.target.checked) {
+                extension.startLogAutoRefresh(workerId);
+            } else {
+                extension.stopLogAutoRefresh();
+            }
+        };
+        
+        const refreshLabel = document.createElement('label');
+        refreshLabel.htmlFor = 'log-auto-refresh';
+        refreshLabel.style.cssText = 'font-size: 12px; color: #ccc; cursor: pointer; white-space: nowrap;';
+        refreshLabel.textContent = 'Auto-refresh';
+        
+        // Add checkbox and label to container
+        refreshContainer.appendChild(refreshCheckbox);
+        refreshContainer.appendChild(refreshLabel);
+        
+        // Close button
+        const closeBtn = this.createButton('✕', 
+            () => {
+                extension.stopLogAutoRefresh();
+                modal.remove();
+            }, 
+            'background-color: #c04c4c;');
+        closeBtn.style.cssText += ' padding: 5px 10px; font-size: 14px; font-weight: bold;';
+        
+        headerButtons.appendChild(refreshContainer);
+        headerButtons.appendChild(closeBtn);
+        
+        header.appendChild(title);
+        header.appendChild(headerButtons);
+        
+        // Log content area
+        const logContainer = document.createElement('div');
+        logContainer.style.cssText = `
+            flex: 1;
+            overflow: auto;
+            padding: 15px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            color: #ddd;
+            background: #0d0d0d;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        `;
+        logContainer.id = 'distributed-log-content';
+        logContainer.textContent = logData.content;
+        
+        // Auto-scroll to bottom
+        setTimeout(() => {
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }, 0);
+        
+        // Status bar
+        const statusBar = document.createElement('div');
+        statusBar.style.cssText = `
+            padding: 10px 20px;
+            border-top: 1px solid #444;
+            font-size: 11px;
+            color: #888;
+        `;
+        statusBar.textContent = `Log file: ${logData.log_file}`;
+        if (logData.truncated) {
+            statusBar.textContent += ` (showing last ${logData.lines_shown} lines of ${this.formatFileSize(logData.file_size)})`;
+        }
+        
+        // Assemble modal
+        content.appendChild(header);
+        content.appendChild(logContainer);
+        content.appendChild(statusBar);
+        modal.appendChild(content);
+        
+        // Close on background click
+        modal.onclick = (e) => {
+            if (e.target === modal) {
+                extension.stopLogAutoRefresh();
+                modal.remove();
+            }
+        };
+        
+        // Close on Escape key
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') {
+                extension.stopLogAutoRefresh();
+                modal.remove();
+                document.removeEventListener('keydown', handleEscape);
+            }
+        };
+        document.addEventListener('keydown', handleEscape);
+        
+        document.body.appendChild(modal);
+        
+        // Start auto-refresh
+        extension.startLogAutoRefresh(workerId);
+    }
+
+    formatFileSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    createWorkerSettingsForm(extension, worker) {
+        const form = document.createElement("div");
+        form.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
+        
+        // Name field
+        const nameGroup = this.createFormGroup("Name:", worker.name, `name-${worker.id}`);
+        form.appendChild(nameGroup.group);
+        
+        // Remote checkbox
+        const remoteGroup = document.createElement("div");
+        remoteGroup.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 5px 0;";
+        
+        const remoteCheckbox = document.createElement("input");
+        remoteCheckbox.type = "checkbox";
+        remoteCheckbox.id = `remote-${worker.id}`;
+        remoteCheckbox.checked = extension.isRemoteWorker(worker);
+        remoteCheckbox.onchange = (e) => {
+            const isRemote = e.target.checked;
+            // Show/hide relevant fields
+            const hostGroup = document.getElementById(`host-group-${worker.id}`);
+            const cudaGroup = document.getElementById(`cuda-group-${worker.id}`);
+            const argsGroup = document.getElementById(`args-group-${worker.id}`);
+            
+            if (isRemote) {
+                hostGroup.style.display = "flex";
+                cudaGroup.style.display = "none";
+                argsGroup.style.display = "none";
+                // If switching to remote and host is localhost, clear it
+                const hostInput = document.getElementById(`host-${worker.id}`);
+                if (hostInput.value === "localhost" || hostInput.value === "127.0.0.1") {
+                    hostInput.value = "";
+                }
+            } else {
+                hostGroup.style.display = "none";
+                cudaGroup.style.display = "flex";
+                argsGroup.style.display = "flex";
+            }
+        };
+        
+        const remoteLabel = document.createElement("label");
+        remoteLabel.htmlFor = `remote-${worker.id}`;
+        remoteLabel.textContent = "Remote Worker";
+        remoteLabel.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
+        
+        remoteGroup.appendChild(remoteCheckbox);
+        remoteGroup.appendChild(remoteLabel);
+        form.appendChild(remoteGroup);
+        
+        // Host field (only for remote workers)
+        const hostGroup = this.createFormGroup("Host:", worker.host || "", `host-${worker.id}`, "text", "e.g., 192.168.1.100");
+        hostGroup.group.id = `host-group-${worker.id}`;
+        hostGroup.group.style.display = extension.isRemoteWorker(worker) ? "flex" : "none";
+        form.appendChild(hostGroup.group);
+        
+        // Port field
+        const portGroup = this.createFormGroup("Port:", worker.port, `port-${worker.id}`, "number");
+        form.appendChild(portGroup.group);
+        
+        // CUDA Device field (only for local workers)
+        const cudaGroup = this.createFormGroup("CUDA Device:", worker.cuda_device || 0, `cuda-${worker.id}`, "number");
+        cudaGroup.group.id = `cuda-group-${worker.id}`;
+        cudaGroup.group.style.display = extension.isRemoteWorker(worker) ? "none" : "flex";
+        form.appendChild(cudaGroup.group);
+        
+        // Extra Args field (only for local workers)
+        const argsGroup = this.createFormGroup("Extra Args:", worker.extra_args || "", `args-${worker.id}`);
+        argsGroup.group.id = `args-group-${worker.id}`;
+        argsGroup.group.style.display = extension.isRemoteWorker(worker) ? "none" : "flex";
+        form.appendChild(argsGroup.group);
+        
+        // Buttons
+        const saveBtn = this.createButton("Save", 
+            () => extension.saveWorkerSettings(worker.id),
+            "background-color: #4a7c4a;");
+        saveBtn.style.cssText += " padding: 6px 14px; font-size: 12px; font-weight: 500;";
+        
+        const cancelBtn = this.createButton("Cancel", 
+            () => extension.cancelWorkerSettings(worker.id),
+            "background-color: #555;");
+        cancelBtn.style.cssText += " padding: 6px 14px; font-size: 12px; font-weight: 500;";
+        
+        const deleteBtn = this.createButton("Delete", 
+            () => extension.deleteWorker(worker.id),
+            "background-color: #7c4a4a;");
+        deleteBtn.style.cssText += " padding: 6px 14px; font-size: 12px; font-weight: 500; margin-left: auto;";
+        
+        const buttonGroup = this.createButtonGroup([saveBtn, cancelBtn, deleteBtn], " margin-top: 8px;");
+        form.appendChild(buttonGroup);
+        
+        return form;
+    }
+
+    createSettingsToggle() {
+        const settingsRow = document.createElement("div");
+        settingsRow.style.cssText = "display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer; user-select: none;";
+        
+        const settingsTitle = document.createElement("h4");
+        settingsTitle.textContent = "Settings";
+        settingsTitle.style.cssText = "margin: 0; font-size: 14px;";
+        
+        const settingsToggle = document.createElement("span");
+        settingsToggle.textContent = "▶"; // Right arrow when collapsed
+        settingsToggle.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease;";
+        
+        settingsRow.appendChild(settingsToggle);
+        settingsRow.appendChild(settingsTitle);
+        
+        return { settingsRow, settingsToggle };
+    }
+
+
+    createCheckboxOrIconColumn(config, data, extension) {
+        const column = this.createCardColumn('checkbox');
+        
+        if (config?.type === 'icon') {
+            column.style.flex = `0 0 ${config.width || 44}px`;
+            column.innerHTML = config.content || '+';
+            if (config.style) {
+                const styles = config.style.split(';').filter(s => s.trim());
+                styles.forEach(style => {
+                    const [prop, value] = style.split(':').map(s => s.trim());
+                    if (prop && value) {
+                        column.style[prop.replace(/-([a-z])/g, (g) => g[1].toUpperCase())] = value;
+                    }
+                });
+            }
+        } else {
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.id = `gpu-${data?.id || 'master'}`;
+            checkbox.checked = config?.checked !== undefined ? config.checked : data?.enabled;
+            checkbox.disabled = config?.disabled || false;
+            checkbox.style.cssText = `cursor: ${config?.disabled ? 'default' : 'pointer'}; width: 16px; height: 16px;`;
+            
+            if (config?.opacity) checkbox.style.opacity = config.opacity;
+            if (config?.title) column.title = config.title;
+            
+            if (config?.enabled && !config?.disabled && data?.id) {
+                checkbox.style.pointerEvents = "none";
+                column.style.cursor = "pointer";
+                column.onclick = async () => {
+                    checkbox.checked = !checkbox.checked;
+                    await extension.updateWorkerEnabled(data.id, checkbox.checked);
+                    extension.updateSummary();
+                };
+            }
+            
+            column.appendChild(checkbox);
+        }
+        
+        return column;
+    }
+
+    createStatusDotHelper(config, data, extension) {
+        let color = config.color || "#666";
+        let title = config.title || "Status";
+        let id = config.id;
+        
+        if (typeof config.initialColor === 'function') {
+            color = config.initialColor(data);
+        }
+        if (typeof config.initialTitle === 'function') {
+            title = config.initialTitle(data);
+        }
+        if (typeof config.id === 'function') {
+            id = config.id(data);
+        }
+        
+        const dot = this.createStatusDot(id, color, title);
+        
+        if (config.border) {
+            dot.style.border = config.border;
+        }
+        
+        if (config.pulsing && (typeof config.pulsing !== 'function' || config.pulsing(data))) {
+            dot.classList.add('status-pulsing');
+        }
+        
+        return dot;
+    }
+
+    createSettingsToggleHelper(expandedId, extension) {
+        const arrow = document.createElement("span");
+        arrow.className = "settings-arrow";
+        arrow.innerHTML = "▶";
+        arrow.style.cssText = this.styles.settingsArrow;
+        
+        const isExpanded = typeof expandedId === 'function' ? 
+            extension.state.isWorkerExpanded(expandedId(extension)) : 
+            (expandedId === 'master' ? false : extension.state.isWorkerExpanded(expandedId));
+            
+        if (isExpanded) {
+            arrow.style.transform = "rotate(90deg)";
+        }
+        
+        return arrow;
+    }
+
+    createControlsSection(config, data, extension, isRemote) {
+        if (!config) return null;
+        
+        const controlsDiv = document.createElement("div");
+        controlsDiv.id = `controls-${data?.id || 'master'}`;
+        controlsDiv.style.cssText = this.styles.controlsDiv;
+        
+        // Always create a wrapper div for consistent layout
+        const controlsWrapper = document.createElement("div");
+        controlsWrapper.style.cssText = "display: flex; gap: 6px; align-items: stretch; width: 100%;";
+        
+        if (config.dynamic && data) {
+            if (isRemote) {
+                const remoteInfo = this.createButton("Remote worker", null, "background-color: #333;");
+                remoteInfo.style.cssText += " flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; color: #999; cursor: default;";
+                remoteInfo.disabled = true;
+                controlsWrapper.appendChild(remoteInfo);
+            } else {
+                const controls = this.createWorkerControls(data.id, {
+                    launch: () => extension.launchWorker(data.id),
+                    stop: () => extension.stopWorker(data.id),
+                    viewLog: () => extension.viewWorkerLog(data.id)
+                });
+                
+                const launchBtn = controls.querySelector(`#launch-${data.id}`);
+                const stopBtn = controls.querySelector(`#stop-${data.id}`);
+                const logBtn = controls.querySelector(`#log-${data.id}`);
+                
+                launchBtn.style.cssText += ` flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; ${BUTTON_STYLES.launch}`;
+                launchBtn.title = "Launch worker (runs in background with logging)";
+                
+                stopBtn.style.cssText += ` flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; ${BUTTON_STYLES.stop} display: none;`;
+                stopBtn.title = "Stop worker";
+                
+                logBtn.style.cssText += ' flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; display: none; background-color: #685434;';
+                
+                while (controls.firstChild) {
+                    controlsWrapper.appendChild(controls.firstChild);
+                }
+            }
+        } else if (config.type === 'info') {
+            const infoBtn = this.createButton(config.text, null, config.style || "");
+            infoBtn.style.cssText += " flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; cursor: default;";
+            infoBtn.disabled = true;
+            controlsWrapper.appendChild(infoBtn);
+        } else if (config.type === 'ghost') {
+            const ghostBtn = document.createElement("button");
+            ghostBtn.style.cssText = `flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; border-radius: 4px; cursor: default; ${config.style || ""}`;
+            ghostBtn.textContent = config.text;
+            ghostBtn.disabled = true;
+            controlsWrapper.appendChild(ghostBtn);
+        }
+        
+        controlsDiv.appendChild(controlsWrapper);
+        return controlsDiv;
+    }
+
+    createSettingsSection(config, data, extension) {
+        const settingsDiv = document.createElement("div");
+        const settingsId = typeof config.id === 'function' ? config.id(data) : config.id;
+        settingsDiv.id = settingsId;
+        settingsDiv.className = "worker-settings";
+        
+        const expandedId = typeof config.expandedId === 'function' ? config.expandedId(data) : config.expandedId;
+        const isExpanded = expandedId === 'master-settings' ? false : extension.state.isWorkerExpanded(expandedId);
+        
+        settingsDiv.style.cssText = this.styles.workerSettings;
+        
+        if (isExpanded) {
+            settingsDiv.classList.add("expanded");
+            settingsDiv.style.padding = "12px";
+            settingsDiv.style.marginTop = "8px";
+            settingsDiv.style.marginBottom = "8px";
+        }
+        
+        let settingsForm;
+        if (config.formType === 'master') {
+            settingsForm = this.createMasterSettingsForm(extension, data);
+        } else if (config.formType === 'worker') {
+            settingsForm = this.createWorkerSettingsForm(extension, data);
+        }
+        
+        if (settingsForm) {
+            settingsDiv.appendChild(settingsForm);
+        }
+        
+        return settingsDiv;
+    }
+
+    createMasterSettingsForm(extension, data) {
+        const settingsForm = document.createElement("div");
+        settingsForm.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
+        
+        const nameResult = this.createFormGroup("Name:", extension.config?.master?.name || "Master", "master-name");
+        settingsForm.appendChild(nameResult.group);
+        
+        const hostResult = this.createFormGroup("Host:", extension.config?.master?.host || "", "master-host", "text", "Auto-detect if empty");
+        settingsForm.appendChild(hostResult.group);
+        
+        const saveBtn = this.createButton("Save", async () => {
+            const nameInput = document.getElementById('master-name');
+            const hostInput = document.getElementById('master-host');
+            
+            if (!extension.config.master) extension.config.master = {};
+            extension.config.master.name = nameInput.value.trim() || "Master";
+            
+            await extension.api.updateMaster({
+                host: hostInput.value.trim(),
+                name: extension.config.master.name
+            });
+            
+            // Reload config to refresh any updated values
+            await extension.loadConfig();
+            
+            document.getElementById('master-name-display').textContent = extension.config.master.name;
+            this.updateMasterDisplay(extension);
+            
+            saveBtn.textContent = "Saved!";
+            setTimeout(() => { saveBtn.textContent = "Save"; }, 2000);
+        }, "background-color: #4a7c4a;");
+        saveBtn.style.cssText += " padding: 6px 12px; font-size: 12px;";
+        
+        const cancelBtn = this.createButton("Cancel", () => {
+            document.getElementById('master-name').value = extension.config?.master?.name || "Master";
+            document.getElementById('master-host').value = extension.config?.master?.host || "";
+        }, "background-color: #555;");
+        cancelBtn.style.cssText += " padding: 6px 12px; font-size: 12px;";
+        
+        const buttonGroup = this.createButtonGroup([saveBtn, cancelBtn], " margin-top: 8px;");
+        settingsForm.appendChild(buttonGroup);
+        
+        return settingsForm;
+    }
+
+    addPlaceholderHover(card, leftColumn, entityType) {
+        card.onmouseover = () => {
+            if (entityType === 'blueprint') {
+                card.style.borderColor = "#777";
+                card.style.backgroundColor = "rgba(255, 255, 255, 0.05)";
+                leftColumn.style.color = "#999";
+            } else {
+                card.style.borderColor = "#666";
+                card.style.backgroundColor = "rgba(255, 255, 255, 0.02)";
+                leftColumn.style.color = "#888";
+                leftColumn.style.borderColor = "#666";
+            }
+        };
+        
+        card.onmouseout = () => {
+            if (entityType === 'blueprint') {
+                card.style.borderColor = "#555";
+                card.style.backgroundColor = "rgba(255, 255, 255, 0.02)";
+                leftColumn.style.color = "#777";
+            } else {
+                card.style.borderColor = "#444";
+                card.style.backgroundColor = "transparent";
+                leftColumn.style.color = "#555";
+                leftColumn.style.borderColor = "#444";
+            }
+        };
+    }
+
+    renderEntityCard(entityType, data, extension) {
+        const config = cardConfigs[entityType] || {};
+        const isPlaceholder = entityType === 'blueprint' || entityType === 'add';
+        const isWorker = entityType === 'worker';
+        const isMaster = entityType === 'master';
+        const isRemote = isWorker && extension.isRemoteWorker(data);
+
+        const cardOptions = { 
+            onClick: isPlaceholder ? data?.onClick : null 
+        };
+        if (isPlaceholder) {
+            cardOptions.title = entityType === 'blueprint' ? "Click to add your first worker" : "Click to add a new worker";
+        }
+        const card = this.createCard(entityType, cardOptions);
+
+        const leftColumn = this.createCheckboxOrIconColumn(config.checkbox, data, extension);
+        card.appendChild(leftColumn);
+
+        const rightColumn = this.createCardColumn('content');
+
+        const infoRow = this.createInfoRow();
+        if (config.infoRowPadding) {
+            infoRow.style.padding = config.infoRowPadding;
+        }
+        if (config.minHeight === 'auto') {
+            infoRow.style.minHeight = 'auto';
+        } else if (config.minHeight) {
+            infoRow.style.minHeight = config.minHeight;
+        }
+        if (config.expand) {
+            infoRow.title = "Click to expand settings";
+            infoRow.onclick = () => {
+                if (isMaster) {
+                    const masterSettingsExpanded = !extension.masterSettingsExpanded;
+                    extension.masterSettingsExpanded = masterSettingsExpanded;
+                    const masterSettingsDiv = document.getElementById("master-settings");
+                    const arrow = infoRow.querySelector('.settings-arrow');
+                    if (masterSettingsExpanded) {
+                        masterSettingsDiv.classList.add("expanded");
+                        masterSettingsDiv.style.padding = "12px";
+                        masterSettingsDiv.style.marginTop = "8px";
+                        masterSettingsDiv.style.marginBottom = "8px";
+                        arrow.style.transform = "rotate(90deg)";
+                    } else {
+                        masterSettingsDiv.classList.remove("expanded");
+                        masterSettingsDiv.style.padding = "0 12px";
+                        masterSettingsDiv.style.marginTop = "0";
+                        masterSettingsDiv.style.marginBottom = "0";
+                        arrow.style.transform = "rotate(0deg)";
+                    }
+                } else {
+                    extension.toggleWorkerExpanded(data.id);
+                }
+            };
+        }
+
+        const workerContent = this.createWorkerContent();
+        if (entityType === 'add') {
+            workerContent.style.alignItems = "center";
+        }
+
+        const statusDot = this.createStatusDotHelper(config.statusDot, data, extension);
+        workerContent.appendChild(statusDot);
+
+        const infoSpan = document.createElement("span");
+        infoSpan.innerHTML = config.infoText(data, extension);
+        workerContent.appendChild(infoSpan);
+
+        infoRow.appendChild(workerContent);
+
+        let settingsArrow;
+        if (config.expand) {
+            const expandedId = config.settings?.expandedId || (isMaster ? 'master' : data?.id);
+            settingsArrow = this.createSettingsToggleHelper(expandedId, extension);
+            if (isMaster && !extension.masterSettingsExpanded) {
+                settingsArrow.style.transform = "rotate(0deg)";
+            }
+            infoRow.appendChild(settingsArrow);
+        }
+
+        rightColumn.appendChild(infoRow);
+
+        if (config.hover === true) {
+            rightColumn.onmouseover = () => {
+                rightColumn.style.backgroundColor = "#333";
+                if (settingsArrow) settingsArrow.style.color = "#fff";
+            };
+            rightColumn.onmouseout = () => {
+                rightColumn.style.backgroundColor = "transparent";
+                if (settingsArrow) settingsArrow.style.color = "#888";
+            };
+        }
+
+        const controlsDiv = this.createControlsSection(config.controls, data, extension, isRemote);
+        if (controlsDiv) {
+            rightColumn.appendChild(controlsDiv);
+        }
+
+        if (config.settings) {
+            const settingsDiv = this.createSettingsSection(config.settings, data, extension);
+            rightColumn.appendChild(settingsDiv);
+        }
+
+        card.appendChild(rightColumn);
+
+        if (config.hover === 'placeholder') {
+            this.addPlaceholderHover(card, leftColumn, entityType);
+        }
+
+        if (isWorker && !isRemote) {
+            extension.updateWorkerControls(data.id);
+        }
+
+        return card;
+    }
+}
