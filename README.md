@@ -255,8 +255,8 @@ This project is under active development. Contributions are welcome!
 
 ### Planned Features
 
+- [x] Support for Cloud workers (release coming soon)
 - [ ] Remote worker control via SSH
 - [ ] View remote worker logs in UI
 - [ ] Improve worker timeout logic
-- [ ] Support for Runpod workers
 - [ ] ComfyUI Desktop app compatibility
