@@ -1,4 +1,4 @@
-import { BUTTON_STYLES, UI_STYLES, STATUS_COLORS } from './constants.js';
+import { BUTTON_STYLES, UI_STYLES, STATUS_COLORS, UI_COLORS, TIMEOUTS } from './constants.js';
 
 const cardConfigs = {
     master: {
@@ -19,7 +19,7 @@ const cardConfigs = {
             const cudaDevice = extension.config?.master?.cuda_device ?? extension.masterCudaDevice;
             const cudaInfo = cudaDevice !== undefined ? `CUDA ${cudaDevice} • ` : '';
             const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-            return `<strong id="master-name-display">${data?.name || extension.config?.master?.name || "Master"}</strong><br><small style="color: #888;"><span id="master-cuda-info">${cudaInfo}Port ${port}</span></small>`;
+            return `<strong id="master-name-display">${data?.name || extension.config?.master?.name || "Master"}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};"><span id="master-cuda-info">${cudaInfo}Port ${port}</span></small>`;
         },
         controls: { 
             type: 'info', 
@@ -50,10 +50,10 @@ const cardConfigs = {
         infoText: (data, extension) => {
             const isRemote = extension.isRemoteWorker(data);
             if (isRemote) {
-                return `<strong>${data.name}</strong><br><small style="color: #888;">${data.host}:${data.port}</small>`;
+                return `<strong>${data.name}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};">${data.host}:${data.port}</small>`;
             } else {
                 const cudaInfo = data.cuda_device !== undefined ? `CUDA ${data.cuda_device} • ` : '';
-                return `<strong>${data.name}</strong><br><small style="color: #888;">${cudaInfo}Port ${data.port}</small>`;
+                return `<strong>${data.name}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};">${cudaInfo}Port ${data.port}</small>`;
             }
         },
         controls: { 
@@ -73,17 +73,17 @@ const cardConfigs = {
             type: 'icon', 
             content: '+', 
             width: 42,
-            style: 'border-right: 2px dashed #555; color: #777; font-size: 24px; font-weight: 500;' 
+            style: `border-right: 2px dashed ${UI_COLORS.BORDER_LIGHT}; color: ${UI_COLORS.ACCENT_COLOR}; font-size: 24px; font-weight: 500;` 
         },
         statusDot: { 
             color: 'transparent', 
-            border: '1px solid #555' 
+            border: `1px solid ${UI_COLORS.BORDER_LIGHT}` 
         },
-        infoText: () => `<strong style="color: #aaa; font-size: 16px;">Add New Worker</strong><br><small style="color: #555;">[CUDA] • [Port]</small>`,
+        infoText: () => `<strong style="color: #aaa; font-size: 16px;">Add New Worker</strong><br><small style="color: ${UI_COLORS.BORDER_LIGHT};">[CUDA] • [Port]</small>`,
         controls: { 
             type: 'ghost', 
             text: 'Configure', 
-            style: 'border: 1px solid #444; background: transparent; color: #555;' 
+            style: `border: 1px solid ${UI_COLORS.BORDER_DARK}; background: transparent; color: ${UI_COLORS.BORDER_LIGHT};` 
         },
         hover: 'placeholder',
         expand: false,
@@ -94,13 +94,13 @@ const cardConfigs = {
             type: 'icon', 
             content: '+',
             width: 43,
-            style: 'border-right: 1px dashed #444; color: #555; font-size: 18px;' 
+            style: `border-right: 1px dashed ${UI_COLORS.BORDER_DARK}; color: ${UI_COLORS.BORDER_LIGHT}; font-size: 18px;` 
         },
         statusDot: { 
             color: 'transparent', 
-            border: '1px solid #555' 
+            border: `1px solid ${UI_COLORS.BORDER_LIGHT}` 
         },
-        infoText: () => `<span style="color: #666; font-weight: bold; font-size: 13px;">Add New Worker</span>`,
+        infoText: () => `<span style="color: ${UI_COLORS.ICON_COLOR}; font-weight: bold; font-size: 13px;">Add New Worker</span>`,
         controls: null,
         hover: 'placeholder',
         expand: false,
@@ -134,7 +134,7 @@ export class DistributedUI {
 
     createButtonGroup(buttons, style = "") {
         const group = document.createElement("div");
-        group.style.cssText = "display: flex; gap: 4px; margin-top: 10px;" + style;
+        group.style.cssText = this.styles.buttonGroup + style;
         buttons.forEach(button => group.appendChild(button));
         return group;
     }
@@ -207,20 +207,19 @@ export class DistributedUI {
 
     createCard(type = 'worker', options = {}) {
         const card = document.createElement("div");
-        const baseStyle = "margin-bottom: 12px; border-radius: 6px; overflow: hidden; display: flex;";
         
         switch(type) {
             case 'master':
             case 'worker':
-                card.style.cssText = baseStyle + "background: #2a2a2a;";
+                card.style.cssText = this.styles.workerCard;
                 break;
             case 'blueprint':
-                card.style.cssText = baseStyle + "border: 2px dashed #555; cursor: pointer; transition: all 0.2s ease; background: rgba(255, 255, 255, 0.02);";
+                card.style.cssText = this.styles.cardBase + this.styles.cardBlueprint;
                 if (options.onClick) card.onclick = options.onClick;
                 if (options.title) card.title = options.title;
                 break;
             case 'add':
-                card.style.cssText = baseStyle + "border: 1px dashed #444; cursor: pointer; transition: all 0.2s ease; background: transparent;";
+                card.style.cssText = this.styles.cardBase + this.styles.cardAdd;
                 if (options.onClick) card.onclick = options.onClick;
                 if (options.title) card.title = options.title;
                 break;
@@ -238,18 +237,17 @@ export class DistributedUI {
 
     createCardColumn(type = 'checkbox', options = {}) {
         const column = document.createElement("div");
-        const baseStyle = "display: flex; align-items: center; justify-content: center;";
         
         switch(type) {
             case 'checkbox':
-                column.style.cssText = baseStyle + "flex: 0 0 44px; border-right: 1px solid #3a3a3a; cursor: default; background: rgba(0,0,0,0.1);";
+                column.style.cssText = this.styles.checkboxColumn;
                 if (options.title) column.title = options.title;
                 break;
             case 'icon':
-                column.style.cssText = baseStyle + "width: 44px; flex-shrink: 0; font-size: 20px; color: #666;";
+                column.style.cssText = this.styles.columnBase + this.styles.iconColumn;
                 break;
             case 'content':
-                column.style.cssText = "flex: 1; display: flex; flex-direction: column; transition: background-color 0.2s ease;";
+                column.style.cssText = this.styles.contentColumn;
                 break;
         }
         
@@ -258,25 +256,25 @@ export class DistributedUI {
 
     createInfoRow(options = {}) {
         const row = document.createElement("div");
-        row.style.cssText = "display: flex; align-items: center; padding: 12px; cursor: pointer; min-height: 64px;";
+        row.style.cssText = this.styles.infoRow;
         if (options.onClick) row.onclick = options.onClick;
         return row;
     }
 
     createWorkerContent() {
         const content = document.createElement("div");
-        content.style.cssText = "display: flex; align-items: center; gap: 10px; flex: 1;";
+        content.style.cssText = this.styles.workerContent;
         return content;
     }
 
     createSettingsForm(fields = [], options = {}) {
         const form = document.createElement("div");
-        form.style.cssText = "display: flex; flex-direction: column; gap: 10px;";
+        form.style.cssText = this.styles.settingsForm;
         
         fields.forEach(field => {
             if (field.type === 'checkbox') {
                 const group = document.createElement("div");
-                group.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 5px 0;";
+                group.style.cssText = this.styles.checkboxGroup;
                 
                 const checkbox = document.createElement("input");
                 checkbox.type = "checkbox";
@@ -287,7 +285,7 @@ export class DistributedUI {
                 const label = document.createElement("label");
                 label.htmlFor = field.id;
                 label.textContent = field.label;
-                label.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
+                label.style.cssText = this.styles.formLabelClickable;
                 
                 group.appendChild(checkbox);
                 group.appendChild(label);
@@ -613,7 +611,7 @@ export class DistributedUI {
 
     createSettingsToggle() {
         const settingsRow = document.createElement("div");
-        settingsRow.style.cssText = "display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer; user-select: none;";
+        settingsRow.style.cssText = this.styles.settingsToggle;
         
         const settingsTitle = document.createElement("h4");
         settingsTitle.textContent = "Settings";
@@ -726,7 +724,7 @@ export class DistributedUI {
         
         // Always create a wrapper div for consistent layout
         const controlsWrapper = document.createElement("div");
-        controlsWrapper.style.cssText = "display: flex; gap: 6px; align-items: stretch; width: 100%;";
+        controlsWrapper.style.cssText = this.styles.controlsWrapper;
         
         if (config.dynamic && data) {
             if (isRemote) {
@@ -835,7 +833,7 @@ export class DistributedUI {
             this.updateMasterDisplay(extension);
             
             saveBtn.textContent = "Saved!";
-            setTimeout(() => { saveBtn.textContent = "Save"; }, 2000);
+            setTimeout(() => { saveBtn.textContent = "Save"; }, TIMEOUTS.FLASH_LONG);
         }, "background-color: #4a7c4a;");
         saveBtn.style.cssText += " padding: 6px 12px; font-size: 12px;";
         

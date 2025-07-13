@@ -1,4 +1,4 @@
-import { BUTTON_STYLES } from './constants.js';
+import { BUTTON_STYLES, TIMEOUTS } from './constants.js';
 
 export async function handleWorkerOperation(extension, button, operation, successText, errorText) {
     const originalText = button.textContent;
@@ -20,7 +20,7 @@ export async function handleWorkerOperation(extension, button, operation, succes
                 button.textContent = originalText;
                 button.style.cssText = originalStyle;
                 button.disabled = false;
-            }, 3000);
+            }, TIMEOUTS.BUTTON_RESET);
             return;
         }
         
@@ -49,7 +49,7 @@ export async function handleWorkerOperation(extension, button, operation, succes
         setTimeout(() => {
             button.textContent = originalText;
             button.style.cssText = originalStyle;
-        }, 3000);
+        }, TIMEOUTS.BUTTON_RESET);
     } finally {
         button.disabled = false;
     }
@@ -60,7 +60,7 @@ export async function handleInterruptWorkers(extension, button) {
         name: "Interrupt",
         endpoint: "/interrupt",
         loadingText: "Interrupting...",
-        onSuccess: () => setTimeout(() => extension.checkAllWorkerStatuses(), 500)
+        onSuccess: () => setTimeout(() => extension.checkAllWorkerStatuses(), TIMEOUTS.POST_ACTION_DELAY)
     }, "Interrupted!", "Error! See Console");
 }
 

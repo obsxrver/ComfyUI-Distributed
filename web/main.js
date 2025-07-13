@@ -16,6 +16,7 @@ class DistributedExtension {
         this.statusCheckInterval = null;
         this.logAutoRefreshInterval = null;
         this.masterSettingsExpanded = false;
+        this.app = app; // Store app reference for toast notifications
         
         // Initialize centralized state
         this.state = createStateManager();
@@ -109,7 +110,7 @@ class DistributedExtension {
                 if (enabled) {
                     // Enabled: Start with checking state and trigger check
                     this.ui.updateStatusDot(workerId, STATUS_COLORS.OFFLINE_RED, "Checking status...", true);
-                    setTimeout(() => this.checkWorkerStatus(worker), 100);
+                    setTimeout(() => this.checkWorkerStatus(worker), TIMEOUTS.STATUS_CHECK_DELAY);
                 } else {
                     // Disabled: Set to gray
                     this.ui.updateStatusDot(workerId, STATUS_COLORS.DISABLED_GRAY, "Disabled", false);
@@ -192,11 +193,9 @@ class DistributedExtension {
     }
 
     startStatusChecking() {
-        // Start checking every 2 seconds for more responsive updates
-        // Don't check immediately since panel might not be open yet
         this.statusCheckInterval = setInterval(() => {
             this.checkAllWorkerStatuses();
-        }, 2000);
+        }, TIMEOUTS.STATUS_CHECK);
     }
 
     async checkAllWorkerStatuses() {
@@ -356,7 +355,7 @@ class DistributedExtension {
         // Allow 90 seconds for worker to launch (model loading can take time)
         setTimeout(() => {
             this.state.setWorkerLaunching(workerId, false);
-        }, 90000);
+        }, TIMEOUTS.LAUNCH);
 
         if (!launchBtn) return;
 
@@ -379,14 +378,14 @@ class DistributedExtension {
                 
                 // Update controls immediately to hide launch button and show stop/log buttons
                 this.updateWorkerControls(workerId);
-                setTimeout(() => this.checkWorkerStatus(worker), 2000);
+                setTimeout(() => this.checkWorkerStatus(worker), TIMEOUTS.STATUS_CHECK);
             }
         } catch (error) {
             // Check if worker was already running
             if (error.message && error.message.includes("already running")) {
                 this.log(`Worker ${worker.name} is already running`, "info");
                 this.updateWorkerControls(workerId);
-                setTimeout(() => this.checkWorkerStatus(worker), 100);
+                setTimeout(() => this.checkWorkerStatus(worker), TIMEOUTS.STATUS_CHECK_DELAY);
             } else {
                 this.log(`Error launching worker: ${error.message || error}`, "error");
                 
@@ -425,11 +424,11 @@ class DistributedExtension {
                     stopBtn.textContent = "Stopped!";
                     setTimeout(() => {
                         this.updateWorkerControls(workerId);
-                    }, 1000);
+                    }, TIMEOUTS.FLASH_SHORT);
                 }
                 
                 // Verify status after a short delay
-                setTimeout(() => this.checkWorkerStatus(worker), 2000);
+                setTimeout(() => this.checkWorkerStatus(worker), TIMEOUTS.STATUS_CHECK);
             } else {
                 this.log(`Failed to stop worker: ${result.message}`, "error");
                 
@@ -446,7 +445,7 @@ class DistributedExtension {
                     
                     setTimeout(() => {
                         this.updateWorkerControls(workerId);
-                    }, 1500);
+                    }, TIMEOUTS.FLASH_MEDIUM);
                 }
             }
         } catch (error) {
@@ -458,7 +457,7 @@ class DistributedExtension {
                 stopBtn.textContent = "Error";
                 setTimeout(() => {
                     this.updateWorkerControls(workerId);
-                }, 1500);
+                }, TIMEOUTS.FLASH_MEDIUM);
             }
         }
     }
@@ -473,7 +472,7 @@ class DistributedExtension {
     }
 
     // Generic async button action handler
-    async handleAsyncButtonAction(button, action, successText, errorText, resetDelay = 3000) {
+    async handleAsyncButtonAction(button, action, successText, errorText, resetDelay = TIMEOUTS.BUTTON_RESET) {
         const originalText = button.textContent;
         const originalStyle = button.style.cssText;
         button.disabled = true;
@@ -638,7 +637,7 @@ class DistributedExtension {
                     logBtn.disabled = false;
                     logBtn.textContent = "View Log";
                     logBtn.style.backgroundColor = "#685434"; // Keep the yellow color
-                }, 2000);
+                }, TIMEOUTS.FLASH_LONG);
             }
         }
     }
@@ -1121,7 +1120,7 @@ class DistributedExtension {
         // Refresh every 2 seconds
         this.logAutoRefreshInterval = setInterval(() => {
             this.refreshLog(workerId, true); // silent mode
-        }, 2000);
+        }, TIMEOUTS.LOG_REFRESH);
     }
 
     stopLogAutoRefresh() {

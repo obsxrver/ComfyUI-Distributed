@@ -1,7 +1,9 @@
+import { TIMEOUTS } from './constants.js';
+
 export function createApiClient(baseUrl) {
-    const request = async (endpoint, options = {}, retries = 3) => {
+    const request = async (endpoint, options = {}, retries = TIMEOUTS.MAX_RETRIES) => {
         let lastError;
-        let delay = 1000; // Initial delay for exponential backoff
+        let delay = TIMEOUTS.RETRY_DELAY; // Initial delay for exponential backoff
 
         for (let attempt = 0; attempt < retries; attempt++) {
             try {
@@ -114,7 +116,7 @@ export function createApiClient(baseUrl) {
         },
         
         // Status checking (with timeout)
-        async checkStatus(url, timeout = 5000) {
+        async checkStatus(url, timeout = TIMEOUTS.DEFAULT_FETCH) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), timeout);
             

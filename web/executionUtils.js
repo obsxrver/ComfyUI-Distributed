@@ -11,7 +11,7 @@ export function setupInterceptor(extension) {
             if (hasCollector || hasDistUpscale) {
                 const result = await executeParallelDistributed(extension, prompt);
                 // Check status after dispatching jobs
-                setTimeout(() => extension.checkAllWorkerStatuses(), 500);
+                setTimeout(() => extension.checkAllWorkerStatuses(), TIMEOUTS.POST_ACTION_DELAY);
                 return result;
             }
         }
@@ -27,8 +27,13 @@ export async function executeParallelDistributed(extension, promptWrapper) {
         // Pre-flight health check on all enabled workers
         const activeWorkers = await performPreflightCheck(extension, enabledWorkers);
         
+        // Case: Enabled workers but all offline
         if (activeWorkers.length === 0 && enabledWorkers.length > 0) {
-            extension.log("No active workers found. Running on master only.");
+            extension.log("No active workers found. All enabled workers are offline.");
+            if (extension.ui?.showToast) {
+                extension.ui.showToast(extension.app, "error", "All Workers Offline", 
+                    `${enabledWorkers.length} worker(s) enabled but all are offline or unreachable. Check worker connections and try again.`, 5000);
+            }
             // Fall back to master-only execution
             return extension.originalQueuePrompt(0, promptWrapper);
         }
@@ -336,7 +341,7 @@ export async function loadImagesForWorker(extension, imageReferences) {
             extension.log(`Clearing image cache (${extension._imageCache.size} images)`, "debug");
             extension._imageCache.clear();
         }
-    }, 30000); // Clear after 30 seconds
+    }, TIMEOUTS.IMAGE_CACHE_CLEAR); // Clear after 30 seconds
     
     return images;
 }
