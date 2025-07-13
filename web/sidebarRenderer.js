@@ -173,7 +173,7 @@ export async function renderSidebarContent(extension, el) {
         
         // Collapsible settings content
         const settingsContent = document.createElement("div");
-        settingsContent.style.cssText = "max-height: 0; overflow: hidden; transition: max-height 0.3s ease;";
+        settingsContent.style.cssText = "max-height: 0; overflow: hidden; opacity: 0; transition: max-height 0.3s ease, opacity 0.3s ease;";
         
         const settingsDiv = document.createElement("div");
         settingsDiv.style.cssText = "display: flex; flex-direction: column; gap: 8px; padding-top: 10px;";
@@ -184,9 +184,11 @@ export async function renderSidebarContent(extension, el) {
             settingsExpanded = !settingsExpanded;
             if (settingsExpanded) {
                 settingsContent.style.maxHeight = "200px";
+                settingsContent.style.opacity = "1";
                 workerSettingsToggle.style.transform = "rotate(90deg)";
             } else {
                 settingsContent.style.maxHeight = "0";
+                settingsContent.style.opacity = "0";
                 workerSettingsToggle.style.transform = "rotate(0deg)";
             }
         };

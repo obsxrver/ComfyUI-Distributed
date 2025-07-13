@@ -821,16 +821,41 @@ export class DistributedUI {
             if (!extension.config.master) extension.config.master = {};
             extension.config.master.name = nameInput.value.trim() || "Master";
             
+            const hostValue = hostInput.value.trim();
+            
             await extension.api.updateMaster({
-                host: hostInput.value.trim(),
+                host: hostValue,
                 name: extension.config.master.name
             });
             
             // Reload config to refresh any updated values
             await extension.loadConfig();
             
+            // If host was emptied, trigger auto-detection
+            if (!hostValue) {
+                extension.log("Host field cleared, triggering IP auto-detection", "debug");
+                await extension.detectMasterIP();
+                // Reload config again to get the auto-detected IP
+                await extension.loadConfig();
+                // Update the input field with the detected IP
+                document.getElementById('master-host').value = extension.config?.master?.host || "";
+            }
+            
             document.getElementById('master-name-display').textContent = extension.config.master.name;
             this.updateMasterDisplay(extension);
+            
+            // Show toast notification
+            if (extension.app?.extensionManager?.toast) {
+                const message = !hostValue ? 
+                    "Master settings saved and IP auto-detected" : 
+                    "Master settings saved successfully";
+                extension.app.extensionManager.toast.add({
+                    severity: "success",
+                    summary: "Master Updated",
+                    detail: message,
+                    life: 3000
+                });
+            }
             
             saveBtn.textContent = "Saved!";
             setTimeout(() => { saveBtn.textContent = "Save"; }, TIMEOUTS.FLASH_LONG);

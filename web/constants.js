@@ -117,7 +117,7 @@ export const UI_STYLES = {
 
 export const TIMEOUTS = {
     DEFAULT_FETCH: 5000, // ms for general API calls
-    STATUS_CHECK: 500, // ms for status checks
+    STATUS_CHECK: 1200, // ms for status checks
     LAUNCH: 90000, // ms for worker launch (longer for model loading)
     RETRY_DELAY: 1000, // initial delay for exponential backoff
     MAX_RETRIES: 3, // max retry attempts
