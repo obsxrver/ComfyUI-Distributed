@@ -297,6 +297,11 @@ async def update_worker_endpoint(request):
                         worker.pop("extra_args", None)
                     else:
                         worker["extra_args"] = data["extra_args"]
+                        
+                # Handle type field
+                if "type" in data:
+                    worker["type"] = data["type"]
+                        
                 worker_found = True
                 break
                 
@@ -310,7 +315,8 @@ async def update_worker_endpoint(request):
                     "port": data["port"],
                     "cuda_device": data["cuda_device"],
                     "enabled": data.get("enabled", False),
-                    "extra_args": data.get("extra_args", "")
+                    "extra_args": data.get("extra_args", ""),
+                    "type": data.get("type", "local")
                 }
                 if "workers" not in config:
                     config["workers"] = []

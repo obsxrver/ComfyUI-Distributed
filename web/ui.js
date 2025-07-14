@@ -49,7 +49,12 @@ const cardConfigs = {
         },
         infoText: (data, extension) => {
             const isRemote = extension.isRemoteWorker(data);
-            if (isRemote) {
+            const isCloud = data.type === 'cloud';
+            
+            if (isCloud) {
+                // For cloud workers, don't show port (it's always 443)
+                return `<strong>${data.name}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};">${data.host}</small>`;
+            } else if (isRemote) {
                 return `<strong>${data.name}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};">${data.host}:${data.port}</small>`;
             } else {
                 const cudaInfo = data.cuda_device !== undefined ? `CUDA ${data.cuda_device} • ` : '';
@@ -525,66 +530,130 @@ export class DistributedUI {
         const nameGroup = this.createFormGroup("Name:", worker.name, `name-${worker.id}`);
         form.appendChild(nameGroup.group);
         
-        // Remote checkbox
-        const remoteGroup = document.createElement("div");
-        remoteGroup.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 5px 0;";
+        // Worker type dropdown
+        const typeGroup = document.createElement("div");
+        typeGroup.style.cssText = "display: flex; flex-direction: column; gap: 4px; margin: 5px 0;";
         
-        const remoteCheckbox = document.createElement("input");
-        remoteCheckbox.type = "checkbox";
-        remoteCheckbox.id = `remote-${worker.id}`;
-        remoteCheckbox.checked = extension.isRemoteWorker(worker);
-        remoteCheckbox.onchange = (e) => {
-            const isRemote = e.target.checked;
+        const typeLabel = document.createElement("label");
+        typeLabel.htmlFor = `worker-type-${worker.id}`;
+        typeLabel.textContent = "Worker Type:";
+        typeLabel.style.cssText = "font-size: 12px; color: #ccc;";
+        
+        const typeSelect = document.createElement("select");
+        typeSelect.id = `worker-type-${worker.id}`;
+        typeSelect.style.cssText = "padding: 4px 8px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 12px;";
+        
+        // Create options
+        const localOption = document.createElement("option");
+        localOption.value = "local";
+        localOption.textContent = "Local";
+        
+        const remoteOption = document.createElement("option");
+        remoteOption.value = "remote";
+        remoteOption.textContent = "Remote";
+        
+        const cloudOption = document.createElement("option");
+        cloudOption.value = "cloud";
+        cloudOption.textContent = "Cloud";
+        
+        typeSelect.appendChild(localOption);
+        typeSelect.appendChild(remoteOption);
+        typeSelect.appendChild(cloudOption);
+        
+        // Create powered by Runpod text (initially hidden)
+        const runpodText = document.createElement("a");
+        runpodText.id = `runpod-text-${worker.id}`;
+        runpodText.href = "https://www.runpod.io";
+        runpodText.target = "_blank";
+        runpodText.textContent = "Deploy cloud worker with Runpod";
+        runpodText.style.cssText = "font-size: 12px; color: #4a90e2; text-decoration: none; margin-top: 4px; display: none; cursor: pointer;";
+        
+        typeSelect.onchange = (e) => {
+            const workerType = e.target.value;
             // Show/hide relevant fields
             const hostGroup = document.getElementById(`host-group-${worker.id}`);
+            const hostInput = document.getElementById(`host-${worker.id}`);
+            const portGroup = document.getElementById(`port-group-${worker.id}`);
+            const portInput = document.getElementById(`port-${worker.id}`);
             const cudaGroup = document.getElementById(`cuda-group-${worker.id}`);
             const argsGroup = document.getElementById(`args-group-${worker.id}`);
+            const runpodTextElem = document.getElementById(`runpod-text-${worker.id}`);
             
-            if (isRemote) {
+            if (workerType === "local") {
+                hostGroup.style.display = "none";
+                portGroup.style.display = "flex";
+                cudaGroup.style.display = "flex";
+                argsGroup.style.display = "flex";
+                runpodTextElem.style.display = "none";
+            } else if (workerType === "remote") {
                 hostGroup.style.display = "flex";
+                portGroup.style.display = "flex";
                 cudaGroup.style.display = "none";
                 argsGroup.style.display = "none";
+                runpodTextElem.style.display = "none";
+                // Update placeholder for remote workers
+                hostInput.placeholder = "e.g., 192.168.1.100";
                 // If switching to remote and host is localhost, clear it
-                const hostInput = document.getElementById(`host-${worker.id}`);
                 if (hostInput.value === "localhost" || hostInput.value === "127.0.0.1") {
                     hostInput.value = "";
                 }
-            } else {
-                hostGroup.style.display = "none";
-                cudaGroup.style.display = "flex";
-                argsGroup.style.display = "flex";
+            } else if (workerType === "cloud") {
+                hostGroup.style.display = "flex";
+                portGroup.style.display = "flex"; // Keep port visible for cloud workers
+                cudaGroup.style.display = "none";
+                argsGroup.style.display = "none";
+                runpodTextElem.style.display = "block";
+                // Update placeholder for cloud workers
+                hostInput.placeholder = "e.g., your-cloud-worker.trycloudflare.com";
+                // Set port to 443 for cloud workers
+                portInput.value = "443";
+                // If switching to cloud and host is localhost, clear it
+                if (hostInput.value === "localhost" || hostInput.value === "127.0.0.1") {
+                    hostInput.value = "";
+                }
             }
         };
         
-        const remoteLabel = document.createElement("label");
-        remoteLabel.htmlFor = `remote-${worker.id}`;
-        remoteLabel.textContent = "Remote Worker";
-        remoteLabel.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
+        typeGroup.appendChild(typeLabel);
+        typeGroup.appendChild(typeSelect);
+        typeGroup.appendChild(runpodText);
+        form.appendChild(typeGroup);
         
-        remoteGroup.appendChild(remoteCheckbox);
-        remoteGroup.appendChild(remoteLabel);
-        form.appendChild(remoteGroup);
+        // Set initial value based on worker type
+        if (worker.type === "cloud") {
+            typeSelect.value = "cloud";
+            // Show Runpod text immediately for cloud workers
+            runpodText.style.display = "block";
+        } else if (extension.isRemoteWorker(worker)) {
+            typeSelect.value = "remote";
+        } else {
+            typeSelect.value = "local";
+        }
+        
+        // Trigger initial state
+        typeSelect.dispatchEvent(new Event('change'));
         
         // Host field (only for remote workers)
         const hostGroup = this.createFormGroup("Host:", worker.host || "", `host-${worker.id}`, "text", "e.g., 192.168.1.100");
         hostGroup.group.id = `host-group-${worker.id}`;
-        hostGroup.group.style.display = extension.isRemoteWorker(worker) ? "flex" : "none";
+        hostGroup.group.style.display = (extension.isRemoteWorker(worker) || worker.type === "cloud") ? "flex" : "none";
         form.appendChild(hostGroup.group);
         
         // Port field
         const portGroup = this.createFormGroup("Port:", worker.port, `port-${worker.id}`, "number");
+        portGroup.group.id = `port-group-${worker.id}`;
         form.appendChild(portGroup.group);
         
         // CUDA Device field (only for local workers)
         const cudaGroup = this.createFormGroup("CUDA Device:", worker.cuda_device || 0, `cuda-${worker.id}`, "number");
         cudaGroup.group.id = `cuda-group-${worker.id}`;
-        cudaGroup.group.style.display = extension.isRemoteWorker(worker) ? "none" : "flex";
+        cudaGroup.group.style.display = (extension.isRemoteWorker(worker) || worker.type === "cloud") ? "none" : "flex";
         form.appendChild(cudaGroup.group);
         
         // Extra Args field (only for local workers)
         const argsGroup = this.createFormGroup("Extra Args:", worker.extra_args || "", `args-${worker.id}`);
         argsGroup.group.id = `args-group-${worker.id}`;
-        argsGroup.group.style.display = extension.isRemoteWorker(worker) ? "none" : "flex";
+        argsGroup.group.style.display = (extension.isRemoteWorker(worker) || worker.type === "cloud") ? "none" : "flex";
         form.appendChild(argsGroup.group);
         
         // Buttons
@@ -728,7 +797,9 @@ export class DistributedUI {
         
         if (config.dynamic && data) {
             if (isRemote) {
-                const remoteInfo = this.createButton("Remote worker", null, BUTTON_STYLES.info);
+                const isCloud = data.type === 'cloud';
+                const workerTypeText = isCloud ? "Cloud worker" : "Remote worker";
+                const remoteInfo = this.createButton(workerTypeText, null, BUTTON_STYLES.info);
                 remoteInfo.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.workerControl + BUTTON_STYLES.info + " color: #999; cursor: default;";
                 remoteInfo.disabled = true;
                 controlsWrapper.appendChild(remoteInfo);

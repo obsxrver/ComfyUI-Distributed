@@ -266,13 +266,17 @@ class DistributedExtension {
     getWorkerUrl(worker, endpoint = '') {
         const host = worker.host || window.location.hostname;
         
-        // Simple rule: port 443 = HTTPS, anything else = HTTP
-        const useHttps = worker.port === 443;
+        // Cloud workers always use HTTPS
+        const isCloud = worker.type === 'cloud';
+        // Simple rule: port 443 = HTTPS, cloud workers = HTTPS, anything else = HTTP
+        const useHttps = isCloud || worker.port === 443;
         const protocol = useHttps ? 'https' : 'http';
         
+        // Cloud workers use default HTTPS port (443)
+        const effectivePort = isCloud ? 443 : worker.port;
         // Don't add port for standard HTTPS/HTTP ports
         const defaultPort = useHttps ? 443 : 80;
-        const port = worker.port === defaultPort ? '' : `:${worker.port}`;
+        const port = effectivePort === defaultPort ? '' : `:${effectivePort}`;
         
         return `${protocol}://${host}${port}${endpoint}`;
     }
@@ -695,8 +699,17 @@ class DistributedExtension {
     }
 
     isRemoteWorker(worker) {
+        // Check if explicitly marked as cloud worker
+        if (worker.type === "cloud") {
+            return true;
+        }
+        // Otherwise check by host (backward compatibility)
         const host = worker.host || window.location.hostname;
         return host !== "localhost" && host !== "127.0.0.1" && host !== window.location.hostname;
+    }
+
+    isCloudWorker(worker) {
+        return worker.type === "cloud";
     }
 
     getMasterUrl() {
@@ -873,7 +886,9 @@ class DistributedExtension {
         
         // Get form values
         const name = document.getElementById(`name-${workerId}`).value;
-        const isRemote = document.getElementById(`remote-${workerId}`).checked;
+        const workerType = document.getElementById(`worker-type-${workerId}`).value;
+        const isRemote = workerType === 'remote' || workerType === 'cloud';
+        const isCloud = workerType === 'cloud';
         const host = isRemote ? document.getElementById(`host-${workerId}`).value : window.location.hostname;
         const port = parseInt(document.getElementById(`port-${workerId}`).value);
         const cudaDevice = isRemote ? undefined : parseInt(document.getElementById(`cuda-${workerId}`).value);
@@ -890,7 +905,7 @@ class DistributedExtension {
             return;
         }
         
-        if (isRemote && !host.trim()) {
+        if ((workerType === 'remote' || workerType === 'cloud') && !host.trim()) {
             app.extensionManager.toast.add({
                 severity: "error",
                 summary: "Validation Error",
@@ -900,7 +915,7 @@ class DistributedExtension {
             return;
         }
         
-        if (isNaN(port) || port < 1 || port > 65535) {
+        if (!isCloud && (isNaN(port) || port < 1 || port > 65535)) {
             app.extensionManager.toast.add({
                 severity: "error",
                 summary: "Validation Error",
@@ -963,6 +978,7 @@ class DistributedExtension {
         try {
             await this.api.updateWorker(workerId, {
                 name: name.trim(),
+                type: workerType,
                 host: isRemote ? host.trim() : null,
                 port: port,
                 cuda_device: isRemote ? null : cudaDevice,
@@ -971,6 +987,7 @@ class DistributedExtension {
             
             // Update local config
             worker.name = name.trim();
+            worker.type = workerType;
             if (isRemote) {
                 worker.host = host.trim();
                 delete worker.cuda_device;
