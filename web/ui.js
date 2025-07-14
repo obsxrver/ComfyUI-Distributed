@@ -591,17 +591,17 @@ export class DistributedUI {
         const saveBtn = this.createButton("Save", 
             () => extension.saveWorkerSettings(worker.id),
             "background-color: #4a7c4a;");
-        saveBtn.style.cssText += " padding: 6px 14px; font-size: 12px; font-weight: 500;";
+        saveBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.success;
         
         const cancelBtn = this.createButton("Cancel", 
             () => extension.cancelWorkerSettings(worker.id),
             "background-color: #555;");
-        cancelBtn.style.cssText += " padding: 6px 14px; font-size: 12px; font-weight: 500;";
+        cancelBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.cancel;
         
         const deleteBtn = this.createButton("Delete", 
             () => extension.deleteWorker(worker.id),
             "background-color: #7c4a4a;");
-        deleteBtn.style.cssText += " padding: 6px 14px; font-size: 12px; font-weight: 500; margin-left: auto;";
+        deleteBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.error + BUTTON_STYLES.marginLeftAuto;
         
         const buttonGroup = this.createButtonGroup([saveBtn, cancelBtn, deleteBtn], " margin-top: 8px;");
         form.appendChild(buttonGroup);
@@ -728,8 +728,8 @@ export class DistributedUI {
         
         if (config.dynamic && data) {
             if (isRemote) {
-                const remoteInfo = this.createButton("Remote worker", null, "background-color: #333;");
-                remoteInfo.style.cssText += " flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; color: #999; cursor: default;";
+                const remoteInfo = this.createButton("Remote worker", null, BUTTON_STYLES.info);
+                remoteInfo.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.workerControl + BUTTON_STYLES.info + " color: #999; cursor: default;";
                 remoteInfo.disabled = true;
                 controlsWrapper.appendChild(remoteInfo);
             } else {
@@ -743,13 +743,13 @@ export class DistributedUI {
                 const stopBtn = controls.querySelector(`#stop-${data.id}`);
                 const logBtn = controls.querySelector(`#log-${data.id}`);
                 
-                launchBtn.style.cssText += ` flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; ${BUTTON_STYLES.launch}`;
+                launchBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.workerControl + BUTTON_STYLES.launch;
                 launchBtn.title = "Launch worker (runs in background with logging)";
                 
-                stopBtn.style.cssText += ` flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; ${BUTTON_STYLES.stop} display: none;`;
+                stopBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.workerControl + BUTTON_STYLES.stop + BUTTON_STYLES.hidden;
                 stopBtn.title = "Stop worker";
                 
-                logBtn.style.cssText += ' flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; display: none; background-color: #685434;';
+                logBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.workerControl + BUTTON_STYLES.log + BUTTON_STYLES.hidden;
                 
                 while (controls.firstChild) {
                     controlsWrapper.appendChild(controls.firstChild);
@@ -757,7 +757,7 @@ export class DistributedUI {
             }
         } else if (config.type === 'info') {
             const infoBtn = this.createButton(config.text, null, config.style || "");
-            infoBtn.style.cssText += " flex: 1; padding: 5px 14px; font-size: 11px; font-weight: 500; cursor: default;";
+            infoBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.workerControl + (config.style || BUTTON_STYLES.info) + " cursor: default;";
             infoBtn.disabled = true;
             controlsWrapper.appendChild(infoBtn);
         } else if (config.type === 'ghost') {
@@ -860,13 +860,13 @@ export class DistributedUI {
             saveBtn.textContent = "Saved!";
             setTimeout(() => { saveBtn.textContent = "Save"; }, TIMEOUTS.FLASH_LONG);
         }, "background-color: #4a7c4a;");
-        saveBtn.style.cssText += " padding: 6px 12px; font-size: 12px;";
+        saveBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.success;
         
         const cancelBtn = this.createButton("Cancel", () => {
             document.getElementById('master-name').value = extension.config?.master?.name || "Master";
             document.getElementById('master-host').value = extension.config?.master?.host || "";
         }, "background-color: #555;");
-        cancelBtn.style.cssText += " padding: 6px 12px; font-size: 12px;";
+        cancelBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.cancel;
         
         const buttonGroup = this.createButtonGroup([saveBtn, cancelBtn], " margin-top: 8px;");
         settingsForm.appendChild(buttonGroup);

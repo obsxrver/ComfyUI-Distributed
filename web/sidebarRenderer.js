@@ -24,7 +24,9 @@ export async function renderSidebarContent(extension, el) {
         el.innerHTML = '';
         const loadingDiv = document.createElement("div");
         loadingDiv.style.cssText = "display: flex; align-items: center; justify-content: center; height: calc(100vh - 100px); color: #888;";
-        loadingDiv.innerHTML = `<div style="font-size: 24px;">◐</div>`;
+        loadingDiv.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" style="color: #888;">
+            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="40 40"/>
+        </svg>`;
         el.appendChild(loadingDiv);
         
         // Add rotation animation
@@ -36,7 +38,7 @@ export async function renderSidebarContent(extension, el) {
             }
         `;
         document.head.appendChild(style);
-        loadingDiv.querySelector('div').style.animation = 'rotate 1s linear infinite';
+        loadingDiv.querySelector('svg').style.animation = 'rotate 1s linear infinite';
         
         // Preload data outside render
         await extension.loadConfig();
@@ -128,15 +130,15 @@ export async function renderSidebarContent(extension, el) {
             BUTTON_STYLES.clearMemory
         );
         clearMemButton.title = "Clear VRAM on all enabled worker GPUs (not master)";
-        clearMemButton.style.cssText += " flex: 1;";
+        clearMemButton.style.cssText = BUTTON_STYLES.base + " flex: 1;" + BUTTON_STYLES.clearMemory;
         
         const interruptButton = extension.ui.createButtonHelper(
             "Interrupt Workers",
             (e) => extension._handleInterruptWorkers(e.target),
-            BUTTON_STYLES.clearMemory
+            BUTTON_STYLES.interrupt
         );
         interruptButton.title = "Cancel/interrupt execution on all enabled worker GPUs";
-        interruptButton.style.cssText += " flex: 1;";
+        interruptButton.style.cssText = BUTTON_STYLES.base + " flex: 1;" + BUTTON_STYLES.interrupt;
         
         buttonRow.appendChild(clearMemButton);
         buttonRow.appendChild(interruptButton);

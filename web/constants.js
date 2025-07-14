@@ -1,10 +1,24 @@
 export const BUTTON_STYLES = {
-    base: "width: 100%; padding: 8px 12px; font-size: 12px; color: white; border: none; border-radius: 4px; cursor: pointer; transition: all 0.2s; font-weight: 500;",
-    clearMemory: "background-color: #555;",
-    success: "background-color: #3ca03c;",
-    error: "background-color: #c04c4c;",
+    // Base styles with unified padding
+    base: "width: 100%; padding: 4px 14px; color: white; border: none; border-radius: 4px; cursor: pointer; transition: all 0.2s; font-size: 12px; font-weight: 500;",
+    
+    // Context-specific combined styles
+    workerControl: "flex: 1; font-size: 11px;",
+    
+    // Layout modifiers
+    hidden: "display: none;",
+    marginLeftAuto: "margin-left: auto;",
+    
+    // Color variants
+    cancel: "background-color: #555;",
+    info: "background-color: #333;",
+    success: "background-color: #4a7c4a;",
+    error: "background-color: #7c4a4a;",
     launch: "background-color: #4a7c4a;",
     stop: "background-color: #7c4a4a;",
+    log: "background-color: #685434;",
+    clearMemory: "background-color: #555; padding: 6px 14px;",
+    interrupt: "background-color: #555; padding: 6px 14px;",
 };
 
 export const STATUS_COLORS = {
@@ -30,22 +44,23 @@ export const PULSE_ANIMATION_CSS = `
     @keyframes pulse {
         0% {
             opacity: 1;
-            transform: scale(1);
+            transform: scale(0.8);
             box-shadow: 0 0 0 0 rgba(240, 173, 78, 0.7);
         }
         50% {
             opacity: 0.3;
-            transform: scale(1.3);
+            transform: scale(1.1);
             box-shadow: 0 0 0 6px rgba(240, 173, 78, 0);
         }
         100% {
             opacity: 1;
-            transform: scale(1);
+            transform: scale(0.8);
             box-shadow: 0 0 0 0 rgba(240, 173, 78, 0);
         }
     }
     .status-pulsing {
         animation: pulse 1.2s ease-in-out infinite;
+        transform-origin: center;
     }
     
     /* Button hover effects */
