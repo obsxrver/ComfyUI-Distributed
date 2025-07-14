@@ -268,17 +268,29 @@ class DistributedExtension {
         
         // Cloud workers always use HTTPS
         const isCloud = worker.type === 'cloud';
-        // Simple rule: port 443 = HTTPS, cloud workers = HTTPS, anything else = HTTP
-        const useHttps = isCloud || worker.port === 443;
+        
+        // Detect if we're running on Runpod (for local workers on Runpod infrastructure)
+        const isRunpodProxy = host.endsWith('.proxy.runpod.net');
+        
+        // For local workers on Runpod, construct the port-specific proxy URL
+        let finalHost = host;
+        if (!worker.host && isRunpodProxy) {
+            // Extract pod ID from current host (format: podId-xxxx.proxy.runpod.net)
+            const podId = host.split('-')[0];
+            const domain = host.substring(host.indexOf('-') + 1);
+            finalHost = `${podId}-${worker.port}.${domain}`;
+        }
+        
+        // Determine protocol: HTTPS for cloud, Runpod proxies, or port 443
+        const useHttps = isCloud || isRunpodProxy || worker.port === 443;
         const protocol = useHttps ? 'https' : 'http';
         
-        // Cloud workers use default HTTPS port (443)
-        const effectivePort = isCloud ? 443 : worker.port;
-        // Don't add port for standard HTTPS/HTTP ports
+        // Only add port if non-standard
         const defaultPort = useHttps ? 443 : 80;
-        const port = effectivePort === defaultPort ? '' : `:${effectivePort}`;
+        const needsPort = !isRunpodProxy && worker.port !== defaultPort;
+        const portStr = needsPort ? `:${worker.port}` : '';
         
-        return `${protocol}://${host}${port}${endpoint}`;
+        return `${protocol}://${finalHost}${portStr}${endpoint}`;
     }
 
     async checkWorkerStatus(worker) {
