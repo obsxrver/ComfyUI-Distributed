@@ -20,7 +20,7 @@ from .utils.network import get_server_port, get_server_loop, get_client_session,
 from .utils.async_helpers import run_async_in_server_loop
 from .utils.constants import (
     TILE_COLLECTION_TIMEOUT, TILE_WAIT_TIMEOUT, TILE_TRANSFER_TIMEOUT,
-    QUEUE_INIT_TIMEOUT, TILE_SEND_TIMEOUT
+    QUEUE_INIT_TIMEOUT, TILE_SEND_TIMEOUT, MAX_BATCH
 )
 
 # Helper function to ensure persistent state is initialized
@@ -614,119 +614,86 @@ class UltimateSDUpscaleDistributed:
     
     async def send_tiles_batch_to_master(self, processed_tiles, multi_job_id, master_url, 
                                        padding, worker_id):
-        """Send all processed tiles to master in a single batch request."""
-        data = aiohttp.FormData()
-        data.add_field('multi_job_id', multi_job_id)
-        data.add_field('worker_id', str(worker_id))
-        data.add_field('is_last', 'True')  # Full batch, so last for this worker
-        data.add_field('batch_size', str(len(processed_tiles)))
-        data.add_field('padding', str(padding))
+        """Send all processed tiles to master, chunked if large."""
+        if not processed_tiles:
+            return  # Early exit if empty
         
-        # Add each tile as a separate field with metadata
-        for i, tile_data in enumerate(processed_tiles):
-            # Convert tensor to PIL
-            img = tensor_to_pil(tile_data['tile'], 0)
-            byte_io = io.BytesIO()
-            img.save(byte_io, format='PNG', compress_level=0)
-            byte_io.seek(0)
+        total_tiles = len(processed_tiles)
+        debug_log(f"UltimateSDUpscale Worker - Sending {total_tiles} tiles in chunks of max {MAX_BATCH}")
+        
+        for start in range(0, total_tiles, MAX_BATCH):
+            chunk = processed_tiles[start:start + MAX_BATCH]
+            chunk_size = len(chunk)
+            is_chunk_last = (start + chunk_size == total_tiles)  # True only for final chunk
             
-            # Add image field
-            data.add_field(f'tile_{i}', byte_io, filename=f'tile_{i}.png', content_type='image/png')
+            debug_log(f"UltimateSDUpscale Worker - Processing chunk {start//MAX_BATCH + 1}, tiles {start} to {start + chunk_size - 1}")
             
-            # Add metadata for this tile
-            data.add_field(f'tile_{i}_idx', str(tile_data['tile_idx']))
-            data.add_field(f'tile_{i}_x', str(tile_data['x']))
-            data.add_field(f'tile_{i}_y', str(tile_data['y']))
-            data.add_field(f'tile_{i}_width', str(tile_data['extracted_width']))
-            data.add_field(f'tile_{i}_height', str(tile_data['extracted_height']))
-        
-        # Retry logic with exponential backoff
-        max_retries = 5
-        retry_delay = 0.5
-        
-        for attempt in range(max_retries):
-            try:
-                session = await get_client_session()
-                url = f"{master_url}/distributed/tile_complete"
+            data = aiohttp.FormData()
+            data.add_field('multi_job_id', multi_job_id)
+            data.add_field('worker_id', str(worker_id))
+            data.add_field('is_last', str(is_chunk_last))
+            data.add_field('batch_size', str(chunk_size))
+            data.add_field('padding', str(padding))
+            
+            # Chunk metadata: Keep absolute tile_idx
+            metadata = []
+            for tile_data in chunk:
+                metadata.append({
+                    'tile_idx': tile_data['tile_idx'],  # Original/absolute idx
+                    'x': tile_data['x'],
+                    'y': tile_data['y'],
+                    'extracted_width': tile_data['extracted_width'],
+                    'extracted_height': tile_data['extracted_height']
+                })
+            
+            # Add JSON metadata
+            data.add_field('tiles_metadata', json.dumps(metadata), content_type='application/json')
+            
+            # Add chunk images as 'tile_{j}' where j=0 to chunk_size-1
+            for j, tile_data in enumerate(chunk):
+                # Convert tensor to PIL
+                img = tensor_to_pil(tile_data['tile'], 0)
+                byte_io = io.BytesIO()
+                img.save(byte_io, format='PNG', compress_level=0)
+                byte_io.seek(0)
                 
-                debug_log(f"UltimateSDUpscale Worker - Sending batch of {len(processed_tiles)} tiles to {url}, attempt {attempt + 1}")
-                
-                async with session.post(url, data=data) as response:
-                    response.raise_for_status()
-                    debug_log(f"UltimateSDUpscale Worker - Successfully sent batch of {len(processed_tiles)} tiles")
-                    return
+                # Add image field
+                data.add_field(f'tile_{j}', byte_io, filename=f'tile_{j}.png', content_type='image/png')
+            
+            # Estimate payload size for logging
+            payload_size = 0
+            for field in data._fields:
+                if hasattr(field[2], 'read'):
+                    field[2].seek(0)
+                    payload_size += len(field[2].read())
+                    field[2].seek(0)
+            debug_log(f"UltimateSDUpscale Worker - Chunk payload size: {payload_size:,} bytes")
+            
+            # Retry logic with exponential backoff
+            max_retries = 5
+            retry_delay = 0.5
+            
+            for attempt in range(max_retries):
+                try:
+                    session = await get_client_session()
+                    url = f"{master_url}/distributed/tile_complete"
                     
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    debug_log(f"UltimateSDUpscale Worker - Retry {attempt + 1}/{max_retries} after error: {e}")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    log(f"UltimateSDUpscale Worker - Failed to send batch after {max_retries} attempts: {e}")
-                    raise
-
-    async def send_tile_to_master(self, tile_tensor, multi_job_id, master_url, 
-                                 tile_idx, x, y, extracted_width, extracted_height, 
-                                 padding, worker_id, is_last=False):
-        """Send processed tile to master with retry logic."""
-        # Convert tensor to PIL image
-        img = tensor_to_pil(tile_tensor, 0)
-        
-        # Store image bytes for retry
-        img_bytes = io.BytesIO()
-        img.save(img_bytes, format='PNG', compress_level=0)
-        img_data = img_bytes.getvalue()
-        
-        # Retry logic with exponential backoff
-        max_retries = 5
-        retry_delay = 0.5  # Start with 500ms
-        
-        for attempt in range(max_retries):
-            try:
-                # Create fresh FormData for each attempt
-                data = aiohttp.FormData()
-                data.add_field('multi_job_id', multi_job_id)
-                data.add_field('worker_id', str(worker_id))
-                data.add_field('tile_idx', str(tile_idx))
-                data.add_field('x', str(x))
-                data.add_field('y', str(y))
-                data.add_field('extracted_width', str(extracted_width))
-                data.add_field('extracted_height', str(extracted_height))
-                data.add_field('padding', str(padding))
-                data.add_field('is_last', str(is_last))
-                data.add_field('image', io.BytesIO(img_data), filename=f'tile_{tile_idx}.png', content_type='image/png')
-                
-                session = await get_client_session()
-                timeout = aiohttp.ClientTimeout(total=TILE_TRANSFER_TIMEOUT)
-                async with session.post(f"{master_url}/distributed/tile_complete", data=data, timeout=timeout) as response:
-                    if response.status == 404 and attempt < max_retries - 1:
-                        # Queue not ready yet, wait and retry
-                        debug_log(f"UltimateSDUpscale Worker - Queue not ready for job {multi_job_id}, attempt {attempt + 1}/{max_retries}, retrying in {retry_delay}s...")
+                    debug_log(f"UltimateSDUpscale Worker - Sending chunk of {chunk_size} tiles to {url}, attempt {attempt + 1}")
+                    
+                    async with session.post(url, data=data) as response:
+                        response.raise_for_status()
+                        debug_log(f"UltimateSDUpscale Worker - Successfully sent chunk of {chunk_size} tiles")
+                        break  # Success, move to next chunk
+                        
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        debug_log(f"UltimateSDUpscale Worker - Retry {attempt + 1}/{max_retries} after error: {e}")
                         await asyncio.sleep(retry_delay)
-                        retry_delay = min(retry_delay * 2, 5.0)  # Exponential backoff with cap at 5s
-                        continue
-                    response.raise_for_status()
-                    debug_log(f"UltimateSDUpscale Worker - Successfully sent tile {tile_idx} on attempt {attempt + 1}")
-                    return  # Success
-            except aiohttp.ClientResponseError as e:
-                if e.status == 404 and attempt < max_retries - 1:
-                    debug_log(f"UltimateSDUpscale Worker - Got 404 for job {multi_job_id}, attempt {attempt + 1}/{max_retries}, retrying in {retry_delay}s...")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 5.0)
-                    continue
-                elif attempt == max_retries - 1:
-                    log(f"UltimateSDUpscale Worker - Failed to send tile {tile_idx} after {max_retries} attempts: {e}")
-                    raise
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    log(f"UltimateSDUpscale Worker - Failed to send tile {tile_idx} after {max_retries} attempts: {e}")
-                    raise
-                else:
-                    debug_log(f"UltimateSDUpscale Worker - Error on attempt {attempt + 1}: {e}, retrying...")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 5.0)
-    
-    
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        log(f"UltimateSDUpscale Worker - Failed to send chunk after {max_retries} attempts: {e}")
+                        raise
+
     def process_single_gpu(self, upscaled_image, model, positive, negative, vae,
                           seed, steps, cfg, sampler_name, scheduler, denoise,
                           tile_width, tile_height, padding, mask_blur, force_uniform_tiles):
@@ -793,37 +760,113 @@ async def tile_complete_endpoint(request):
             padding = int(data.get('padding', 32))
             debug_log(f"UltimateSDUpscale - tile_complete batch - job_id: {multi_job_id}, worker: {worker_id}, batch_size: {batch_size}")
             
-            for i in range(batch_size):
-                tile_field = data.get(f'tile_{i}')
-                if tile_field is None:
-                    return await handle_api_error(request, f"Missing tile_{i}", 400)
-                
-                # Get metadata for this tile
-                tile_idx = int(data.get(f'tile_{i}_idx', i))
-                x = int(data.get(f'tile_{i}_x', 0))
-                y = int(data.get(f'tile_{i}_y', 0))
-                extracted_width = int(data.get(f'tile_{i}_width', 512))
-                extracted_height = int(data.get(f'tile_{i}_height', 512))
-                
+            # Check for JSON metadata
+            metadata_field = data.get('tiles_metadata')
+            if metadata_field:
+                # New JSON metadata format
                 try:
-                    # Process image
-                    img_data = tile_field.file.read()
-                    img = Image.open(io.BytesIO(img_data)).convert("RGB")
-                    img_np = np.array(img).astype(np.float32) / 255.0
-                    tensor = torch.from_numpy(img_np)[None,]
+                    # Handle different types of metadata field
+                    if hasattr(metadata_field, 'file'):
+                        # File-like object
+                        metadata_str = metadata_field.file.read().decode('utf-8')
+                    elif isinstance(metadata_field, (bytes, bytearray)):
+                        # Direct bytes/bytearray
+                        metadata_str = metadata_field.decode('utf-8')
+                    else:
+                        # String
+                        metadata_str = str(metadata_field)
                     
-                    tiles.append({
-                        'tensor': tensor,
-                        'tile_idx': tile_idx,
-                        'x': x,
-                        'y': y,
-                        'extracted_width': extracted_width,
-                        'extracted_height': extracted_height,
-                        'padding': padding
-                    })
+                    metadata = json.loads(metadata_str)
+                    if len(metadata) != batch_size:
+                        return await handle_api_error(request, "Metadata length mismatch", 400)
+                    
+                    tile_data_list = []  # Temporary list to collect and sort tiles
+                    
+                    for i in range(batch_size):
+                        tile_field = data.get(f'tile_{i}')
+                        if tile_field is None:
+                            log(f"Missing tile_{i} from worker {worker_id}, skipping")
+                            continue
+                        
+                        try:
+                            # Process image
+                            img_data = tile_field.file.read()
+                            img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                            img_np = np.array(img).astype(np.float32) / 255.0
+                            tensor = torch.from_numpy(img_np)[None,]
+                            
+                            # Get metadata for this tile
+                            if i < len(metadata):
+                                tile_data = metadata[i]
+                                tile_idx = tile_data.get('tile_idx', i)
+                                
+                                # Validate order
+                                if i != tile_idx % batch_size:
+                                    debug_log(f"Warning: Tile order mismatch at position {i}, expected tile_idx {tile_idx}")
+                                
+                                tile_info = {
+                                    'tensor': tensor,
+                                    'tile_idx': tile_idx,
+                                    'x': tile_data['x'],
+                                    'y': tile_data['y'],
+                                    'extracted_width': tile_data['extracted_width'],
+                                    'extracted_height': tile_data['extracted_height'],
+                                    'padding': padding
+                                }
+                                tile_data_list.append(tile_info)
+                            else:
+                                log(f"Missing metadata for tile {i} from worker {worker_id}, skipping")
+                                continue
+                                
+                        except Exception as e:
+                            log(f"Error processing tile {i} from worker {worker_id}: {e}, skipping this tile")
+                            continue
+                    
+                    # Sort tiles by tile_idx to ensure correct order
+                    tile_data_list.sort(key=lambda x: x['tile_idx'])
+                    tiles.extend(tile_data_list)
+                    
+                    if tile_data_list:
+                        debug_log(f"Reordered {len(tile_data_list)} tiles based on tile_idx")
                 except Exception as e:
-                    log(f"Error processing tile {i} from worker {worker_id}: {e}")
-                    return await handle_api_error(request, f"Tile processing error: {e}", 400)
+                    log(f"Error processing JSON metadata from worker {worker_id}: {e}")
+                    return await handle_api_error(request, f"Metadata processing error: {e}", 400)
+            else:
+                # Legacy format: individual fields per tile (backward compatibility)
+                debug_log(f"WARNING: Worker {worker_id} using legacy field format. Please update to use JSON metadata.")
+                
+                for i in range(batch_size):
+                    tile_field = data.get(f'tile_{i}')
+                    if tile_field is None:
+                        log(f"Missing tile_{i} from worker {worker_id}, skipping")
+                        continue
+                    
+                    # Get metadata for this tile
+                    tile_idx = int(data.get(f'tile_{i}_idx', i))
+                    x = int(data.get(f'tile_{i}_x', 0))
+                    y = int(data.get(f'tile_{i}_y', 0))
+                    extracted_width = int(data.get(f'tile_{i}_width', 512))
+                    extracted_height = int(data.get(f'tile_{i}_height', 512))
+                    
+                    try:
+                        # Process image
+                        img_data = tile_field.file.read()
+                        img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                        img_np = np.array(img).astype(np.float32) / 255.0
+                        tensor = torch.from_numpy(img_np)[None,]
+                        
+                        tiles.append({
+                            'tensor': tensor,
+                            'tile_idx': tile_idx,
+                            'x': x,
+                            'y': y,
+                            'extracted_width': extracted_width,
+                            'extracted_height': extracted_height,
+                            'padding': padding
+                        })
+                    except Exception as e:
+                        log(f"Error processing tile {i} from worker {worker_id}: {e}, skipping this tile")
+                        continue
         else:
             # Single tile mode (backward compatibility)
             image_file = data.get('image')

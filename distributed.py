@@ -26,7 +26,7 @@ from .utils.async_helpers import run_async_in_server_loop
 from .utils.constants import (
     WORKER_JOB_TIMEOUT, PROCESS_TERMINATION_TIMEOUT, WORKER_CHECK_INTERVAL, 
     STATUS_CHECK_INTERVAL, CHUNK_SIZE, LOG_TAIL_BYTES, WORKER_LOG_PATTERN, 
-    WORKER_STARTUP_DELAY, PROCESS_WAIT_TIMEOUT, MEMORY_CLEAR_DELAY
+    WORKER_STARTUP_DELAY, PROCESS_WAIT_TIMEOUT, MEMORY_CLEAR_DELAY, MAX_BATCH
 )
 
 # Try to import psutil for better process management
@@ -1314,20 +1314,74 @@ async def job_complete_endpoint(request):
             # Batch mode: Extract multiple images
             debug_log(f"job_complete received batch - job_id: {multi_job_id}, worker: {worker_id}, batch_size: {batch_size}")
             
+            # Check for JSON metadata
+            metadata_field = data.get('images_metadata')
+            metadata = None
+            if metadata_field:
+                # New JSON metadata format
+                try:
+                    # Handle different types of metadata field
+                    if hasattr(metadata_field, 'file'):
+                        # File-like object
+                        metadata_str = metadata_field.file.read().decode('utf-8')
+                    elif isinstance(metadata_field, (bytes, bytearray)):
+                        # Direct bytes/bytearray
+                        metadata_str = metadata_field.decode('utf-8')
+                    else:
+                        # String
+                        metadata_str = str(metadata_field)
+                    
+                    metadata = json.loads(metadata_str)
+                    if len(metadata) != batch_size:
+                        return await handle_api_error(request, "Metadata length mismatch", 400)
+                    debug_log(f"Using JSON metadata for batch from worker {worker_id}")
+                except Exception as e:
+                    log(f"Error parsing JSON metadata from worker {worker_id}: {e}")
+                    return await handle_api_error(request, f"Metadata parsing error: {e}", 400)
+            else:
+                # Legacy format - log deprecation warning
+                debug_log(f"WARNING: Worker {worker_id} using legacy field format. Please update to use JSON metadata.")
+            
+            # Process images with per-item error handling
+            image_data_list = []  # List of tuples: (index, tensor)
+            
             for i in range(batch_size):
                 image_field = data.get(f'image_{i}')
                 if image_field is None:
-                    return await handle_api_error(request, f"Missing image_{i}", 400)
+                    log(f"Missing image_{i} from worker {worker_id}, skipping")
+                    continue
                     
                 try:
                     img_data = image_field.file.read()
                     img = Image.open(io.BytesIO(img_data)).convert("RGB")
                     tensor = pil_to_tensor(img)
                     tensor = ensure_contiguous(tensor)
-                    tensors.append(tensor)
+                    
+                    # Get expected index from metadata or use position
+                    if metadata and i < len(metadata):
+                        expected_idx = metadata[i].get('index', i)
+                        if i != expected_idx:
+                            debug_log(f"Warning: Image order mismatch at position {i}, expected index {expected_idx}")
+                    else:
+                        expected_idx = i
+                    
+                    image_data_list.append((expected_idx, tensor))
                 except Exception as e:
-                    log(f"Error processing image {i} from worker {worker_id}: {e}")
-                    return await handle_api_error(request, f"Image processing error: {e}", 400)
+                    log(f"Error processing image {i} from worker {worker_id}: {e}, skipping this image")
+                    # Continue processing other images instead of failing entire batch
+                    continue
+            
+            # Check if we got any valid images
+            if not image_data_list:
+                return await handle_api_error(request, "No valid images in batch", 400)
+            
+            # Sort by index to ensure correct order
+            image_data_list.sort(key=lambda x: x[0])
+            tensors = [tensor for _, tensor in image_data_list]
+            
+            # Validate final order
+            if metadata:
+                debug_log(f"Reordered {len(tensors)} images based on metadata indices")
         else:
             # Fallback for single-image mode (backward compatibility)
             image_file = data.get('image')
@@ -1413,61 +1467,60 @@ class DistributedCollectorNode:
         return result
 
     async def send_batch_to_master(self, image_batch, multi_job_id, master_url, worker_id):
-        """Send entire image batch in one POST using multi-part FormData"""
-        data = aiohttp.FormData()
-        data.add_field('multi_job_id', multi_job_id)
-        data.add_field('worker_id', str(worker_id))
-        data.add_field('is_last', 'True')  # Full batch, so last for this worker
-        data.add_field('batch_size', str(image_batch.shape[0]))  # Number of images in batch
-
-        # Loop to add each image as a separate field
-        for i in range(image_batch.shape[0]):
-            # Convert tensor slice to PIL
-            img = tensor_to_pil(image_batch[i:i+1], 0)  # tensor_to_pil handles single-image batch
-            byte_io = io.BytesIO()
-            img.save(byte_io, format='PNG', compress_level=0)  # Lossless, no compression for speed
-            byte_io.seek(0)
-            data.add_field(f'image_{i}', byte_io, filename=f'image_{i}.png', content_type='image/png')
-
-        try:
-            session = await get_client_session()
-            url = f"{master_url}/distributed/job_complete"
-            debug_log(f"Worker - Sending batch of {image_batch.shape[0]} images to URL: {url}")
-            async with session.post(url, data=data) as response:
-                response.raise_for_status()
-        except Exception as e:
-            log(f"Worker - Failed to send batch to master: {e}")
-            debug_log(f"Worker - Full error details: URL={url}")
-
-    async def send_image_to_master(self, image_tensor, multi_job_id, master_url, image_index, worker_id, is_last=False):
-        """Helper method to send a single image to the master"""
-        # Ensure we handle the tensor shape correctly (H, W, C)
-        if image_tensor.dim() == 4:  # Has batch dimension
-            img = tensor_to_pil(image_tensor, 0)
-        else:  # Single image without batch dimension
-            # Add batch dimension temporarily for tensor_to_pil
-            img = tensor_to_pil(image_tensor.unsqueeze(0), 0)
-        byte_io = io.BytesIO()
-        # Use PNG with no compression for lossless transfer
-        img.save(byte_io, format='PNG', compress_level=0)
-        byte_io.seek(0)
+        """Send image batch to master, chunked if large."""
+        batch_size = image_batch.shape[0]
+        if batch_size == 0:
+            return
         
-        data = aiohttp.FormData()
-        data.add_field('multi_job_id', multi_job_id)
-        data.add_field('worker_id', str(worker_id))
-        data.add_field('image_index', str(image_index))
-        data.add_field('is_last', str(is_last))
-        data.add_field('image', byte_io, filename=f'image_{image_index}.png', content_type='image/png')
+        debug_log(f"Worker - Sending {batch_size} images in chunks of max {MAX_BATCH}")
+        
+        for start in range(0, batch_size, MAX_BATCH):
+            chunk = image_batch[start:start + MAX_BATCH]
+            chunk_size = chunk.shape[0]
+            is_chunk_last = (start + chunk_size == batch_size)  # True only for final chunk
+            
+            debug_log(f"Worker - Processing chunk {start//MAX_BATCH + 1}, images {start} to {start + chunk_size - 1}")
+            
+            data = aiohttp.FormData()
+            data.add_field('multi_job_id', multi_job_id)
+            data.add_field('worker_id', str(worker_id))
+            data.add_field('is_last', str(is_chunk_last))
+            data.add_field('batch_size', str(chunk_size))
+            
+            # Chunk metadata: Absolute index from full batch
+            metadata = [{'index': start + j} for j in range(chunk_size)]
+            data.add_field('images_metadata', json.dumps(metadata), content_type='application/json')
+            
+            # Add chunk images
+            for j in range(chunk_size):
+                # Convert tensor slice to PIL
+                img = tensor_to_pil(chunk[j:j+1], 0)
+                byte_io = io.BytesIO()
+                img.save(byte_io, format='PNG', compress_level=0)
+                byte_io.seek(0)
+                data.add_field(f'image_{j}', byte_io, filename=f'image_{j}.png', content_type='image/png')
+            
+            try:
+                # Estimate payload size for logging
+                payload_size = 0
+                for field in data._fields:
+                    if hasattr(field[2], 'read'):
+                        field[2].seek(0)
+                        payload_size += len(field[2].read())
+                        field[2].seek(0)
+                debug_log(f"Worker - Chunk payload size: {payload_size:,} bytes")
+                
+                session = await get_client_session()
+                url = f"{master_url}/distributed/job_complete"
+                debug_log(f"Worker - Sending chunk of {chunk_size} images to URL: {url}")
+                async with session.post(url, data=data) as response:
+                    response.raise_for_status()
+                    debug_log(f"Worker - Successfully sent chunk of {chunk_size} images")
+            except Exception as e:
+                log(f"Worker - Failed to send chunk to master: {e}")
+                debug_log(f"Worker - Full error details: URL={url}")
+                raise  # Re-raise to handle at caller level
 
-        try:
-            session = await get_client_session()
-            url = f"{master_url}/distributed/job_complete"
-            debug_log(f"Worker - Sending image to URL: {url}")
-            async with session.post(url, data=data) as response:
-                response.raise_for_status()
-        except Exception as e:
-            log(f"Worker - Failed to send image {image_index+1} to master: {e}")
-            debug_log(f"Worker - Full error details: URL={master_url}/distributed/job_complete")
 
     async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id=""):
         if is_worker:
@@ -1519,10 +1572,8 @@ class DistributedCollectorNode:
                 initial_size = q.qsize()
             debug_log(f"Master - Queue size before collection: {initial_size}")
 
-            # NEW: Initialize progress bar with estimated total images
-            expected_total = master_batch_size + (num_workers * worker_batch_size)  # Estimate; adjust if batch sizes vary
-            p = ProgressBar(expected_total)
-            p.update(master_batch_size)  # Start with master's contribution (already "collected")
+            # NEW: Initialize progress bar for workers (total = num_workers)
+            p = ProgressBar(num_workers)
 
             while len(workers_done) < num_workers:
                 try:
@@ -1555,9 +1606,6 @@ class DistributedCollectorNode:
                                 debug_log(f"Master - Worker tensor - shape: {tensor.shape}, dtype: {tensor.dtype}, device: {tensor.device}")
                         
                         collected_count += len(tensors)
-                        
-                        # Update progress for batch
-                        p.update(len(tensors))
                     else:
                         # Single image mode (backward compat)
                         image_index = result['image_index']
@@ -1574,15 +1622,13 @@ class DistributedCollectorNode:
                             debug_log(f"Master - Worker tensor - shape: {tensor.shape}, dtype: {tensor.dtype}, device: {tensor.device}")
                         
                         collected_count += 1
-                        
-                        # Update progress for single image
-                        p.update(1)
                     
                     # Once we start receiving images, use shorter timeout
                     timeout = WORKER_JOB_TIMEOUT
                     
                     if is_last:
                         workers_done.add(worker_id)
+                        p.update(1)  # +1 per completed worker
                         debug_log(f"Master - Worker {worker_id} done. Collected {len(worker_images[worker_id])} images")
                     else:
                         debug_log(f"Master - Collected image {image_index + 1} from worker {worker_id}")
@@ -1625,7 +1671,6 @@ class DistributedCollectorNode:
                                             worker_images[worker_id][idx] = tensor
                                         
                                         collected_count += len(tensors)
-                                        p.update(len(tensors))
                                     else:
                                         # Single image mode
                                         image_index = item['image_index']
@@ -1636,10 +1681,10 @@ class DistributedCollectorNode:
                                         worker_images[worker_id][image_index] = tensor
                                         
                                         collected_count += 1
-                                        p.update(1)
                                     
                                     if is_last:
                                         workers_done.add(worker_id)
+                                        p.update(1)  # +1 here too
                                         debug_log(f"Master - Worker {worker_id} done (found in timeout drain)")
                         else:
                             log(f"Master - Queue {multi_job_id} no longer exists!")

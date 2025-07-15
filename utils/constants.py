@@ -32,3 +32,6 @@ TILE_SEND_TIMEOUT = 60.0
 
 # Memory operations  
 MEMORY_CLEAR_DELAY = 0.5
+
+# Batch processing
+MAX_BATCH = 20  # Maximum items per batch to prevent timeouts/OOM (~100MB chunks for 512x512 PNGs)
