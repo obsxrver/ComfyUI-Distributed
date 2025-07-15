@@ -264,3 +264,53 @@ export function hasUpstreamNode(apiPrompt, nodeId, upstreamType) {
     
     return false;
 }
+
+/**
+ * Get system information from a worker
+ * @param {string} workerUrl - The worker URL
+ * @returns {Promise<Object>} System information including platform details
+ */
+export async function getWorkerSystemInfo(workerUrl) {
+    try {
+        const response = await fetch(`${workerUrl}/distributed/system_info`);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.warn(`Failed to get system info from ${workerUrl}:`, error);
+        // Return sensible defaults
+        return {
+            platform: {
+                os_name: 'posix',  // Assume Linux
+                path_separator: '/',
+                system: 'Linux'
+            }
+        };
+    }
+}
+
+// Cache system info to avoid repeated calls
+const systemInfoCache = new Map();
+
+/**
+ * Get cached system information from a worker
+ * @param {string} workerUrl - The worker URL
+ * @returns {Promise<Object>} Cached or fresh system information
+ */
+export async function getCachedWorkerSystemInfo(workerUrl) {
+    if (systemInfoCache.has(workerUrl)) {
+        return systemInfoCache.get(workerUrl);
+    }
+    
+    const info = await getWorkerSystemInfo(workerUrl);
+    systemInfoCache.set(workerUrl, info);
+    return info;
+}
+
+/**
+ * Clear the system info cache
+ */
+export function clearSystemInfoCache() {
+    systemInfoCache.clear();
+}

@@ -1,6 +1,41 @@
 import { api } from "../../scripts/api.js";
-import { findNodesByClass, findImageReferences, hasUpstreamNode, pruneWorkflowForWorker } from './workerUtils.js';
+import { findNodesByClass, findImageReferences, hasUpstreamNode, pruneWorkflowForWorker, getCachedWorkerSystemInfo } from './workerUtils.js';
 import { TIMEOUTS } from './constants.js';
+
+/**
+ * Convert paths in the API prompt to match the target platform's separator
+ * @param {Object} apiPrompt - The workflow API prompt
+ * @param {string} targetSeparator - The target path separator ('\\' or '/')
+ * @returns {Object} The converted API prompt
+ */
+function convertPathsForPlatform(apiPrompt, targetSeparator) {
+    // Regex to identify likely file paths with extensions
+    const isLikelyFilename = (value) => {
+        return value.match(/\.(ckpt|safetensors|pt|pth|bin|yaml|json|png|jpg|jpeg|webp|gif|bmp|latent|txt|vae|lora|embedding)(\s*\[\w+\])?$/i);
+    };
+    
+    function convert(obj) {
+        if (typeof obj === 'string') {
+            // Only convert strings that look like file paths
+            if ((obj.includes('\\') || obj.includes('/')) && isLikelyFilename(obj)) {
+                // Replace any path separator with the target one
+                return obj.replace(/[\\\/]/g, targetSeparator);
+            }
+            return obj;
+        } else if (Array.isArray(obj)) {
+            return obj.map(convert);
+        } else if (typeof obj === 'object' && obj !== null) {
+            const newObj = {};
+            for (const [key, value] of Object.entries(obj)) {
+                newObj[key] = convert(value);
+            }
+            return newObj;
+        }
+        return obj;
+    }
+    
+    return convert(apiPrompt);
+}
 
 export function setupInterceptor(extension) {
     api.queuePrompt = async (number, prompt) => {
@@ -63,7 +98,7 @@ export async function executeParallelDistributed(extension, promptWrapper) {
                 job_id_map: job_id_map // Pass the map of unique IDs
             };
             
-            const jobApiPrompt = prepareApiPromptForParticipant(
+            const jobApiPrompt = await prepareApiPromptForParticipant(
                 extension, promptWrapper.output, participantId, options
             );
             
@@ -97,7 +132,7 @@ export async function executeParallelDistributed(extension, promptWrapper) {
     }
 }
 
-export function prepareApiPromptForParticipant(extension, baseApiPrompt, participantId, options = {}) {
+export async function prepareApiPromptForParticipant(extension, baseApiPrompt, participantId, options = {}) {
     let jobApiPrompt = JSON.parse(JSON.stringify(baseApiPrompt));
     const isMaster = participantId === 'master';
     
@@ -106,9 +141,31 @@ export function prepareApiPromptForParticipant(extension, baseApiPrompt, partici
     const upscaleNodes = findNodesByClass(jobApiPrompt, "UltimateSDUpscaleDistributed");
     const allDistributedNodes = [...collectorNodes, ...upscaleNodes];
     
-    // For workers, prune the workflow to only include distributed node dependencies
-    if (!isMaster && allDistributedNodes.length > 0) {
-        jobApiPrompt = pruneWorkflowForWorker(extension, jobApiPrompt, allDistributedNodes);
+    // For workers, handle platform-specific path conversion
+    if (!isMaster) {
+        const workerInfo = extension.config.workers.find(w => w.id === participantId);
+        
+        if (workerInfo && workerInfo.host) {
+            // Remote or cloud worker - needs path translation
+            try {
+                const workerUrl = extension.getWorkerUrl(workerInfo);
+                const systemInfo = await getCachedWorkerSystemInfo(workerUrl);
+                const targetSeparator = systemInfo.platform.path_separator;
+                
+                // Convert paths to match worker's platform
+                jobApiPrompt = convertPathsForPlatform(jobApiPrompt, targetSeparator);
+                
+                extension.log(`Converted paths for ${systemInfo.platform.system} worker ${participantId} (separator: '${targetSeparator}')`, "debug");
+            } catch (e) {
+                extension.log(`Failed to get system info for worker ${participantId}: ${e.message}`, "warn");
+                // Continue without path conversion
+            }
+        }
+        
+        // Prune the workflow to only include distributed node dependencies
+        if (allDistributedNodes.length > 0) {
+            jobApiPrompt = pruneWorkflowForWorker(extension, jobApiPrompt, allDistributedNodes);
+        }
     }
     
     // Handle image references for remote workers

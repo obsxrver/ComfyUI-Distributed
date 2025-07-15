@@ -1295,6 +1295,24 @@ async def load_image_endpoint(request):
     except Exception as e:
         return await handle_api_error(request, e, 500)
 
+@server.PromptServer.instance.routes.get("/distributed/system_info")
+async def system_info_endpoint(request):
+    """Return system information including platform details"""
+    import platform
+    
+    return web.json_response({
+        "platform": {
+            "os_name": os.name,  # 'nt' for Windows, 'posix' for Unix/Linux
+            "path_separator": os.sep,  # '\\' on Windows, '/' on Linux
+            "system": platform.system(),  # 'Windows', 'Linux', 'Darwin'
+            "machine": platform.machine(),  # 'x86_64', 'AMD64', etc.
+        },
+        "comfyui": {
+            # Can add ComfyUI-specific info here
+            "version": "distributed-extension",
+        }
+    })
+
 @server.PromptServer.instance.routes.post("/distributed/job_complete")
 async def job_complete_endpoint(request):
     try:
