@@ -568,70 +568,64 @@ export class DistributedUI {
         runpodText.textContent = "Deploy cloud worker with Runpod";
         runpodText.style.cssText = "font-size: 12px; color: #4a90e2; text-decoration: none; margin-top: 4px; display: none; cursor: pointer;";
         
-        typeSelect.onchange = (e) => {
-            const workerType = e.target.value;
-            // Show/hide relevant fields
-            const hostGroup = document.getElementById(`host-group-${worker.id}`);
-            const hostInput = document.getElementById(`host-${worker.id}`);
-            const portGroup = document.getElementById(`port-group-${worker.id}`);
-            const portInput = document.getElementById(`port-${worker.id}`);
-            const cudaGroup = document.getElementById(`cuda-group-${worker.id}`);
-            const argsGroup = document.getElementById(`args-group-${worker.id}`);
-            const runpodTextElem = document.getElementById(`runpod-text-${worker.id}`);
-            
-            if (workerType === "local") {
-                hostGroup.style.display = "none";
-                portGroup.style.display = "flex";
-                cudaGroup.style.display = "flex";
-                argsGroup.style.display = "flex";
-                runpodTextElem.style.display = "none";
-            } else if (workerType === "remote") {
-                hostGroup.style.display = "flex";
-                portGroup.style.display = "flex";
-                cudaGroup.style.display = "none";
-                argsGroup.style.display = "none";
-                runpodTextElem.style.display = "none";
-                // Update placeholder for remote workers
-                hostInput.placeholder = "e.g., 192.168.1.100";
-                // If switching to remote and host is localhost, clear it
-                if (hostInput.value === "localhost" || hostInput.value === "127.0.0.1") {
-                    hostInput.value = "";
+        // Store the onchange function to be assigned later
+        const createOnChangeHandler = () => {
+            return (e) => {
+                const workerType = e.target.value;
+                // Show/hide relevant fields
+                const hostGroup = document.getElementById(`host-group-${worker.id}`);
+                const hostInput = document.getElementById(`host-${worker.id}`);
+                const portGroup = document.getElementById(`port-group-${worker.id}`);
+                const portInput = document.getElementById(`port-${worker.id}`);
+                const cudaGroup = document.getElementById(`cuda-group-${worker.id}`);
+                const argsGroup = document.getElementById(`args-group-${worker.id}`);
+                const runpodTextElem = document.getElementById(`runpod-text-${worker.id}`);
+                
+                // Check if elements exist before accessing them
+                if (!hostGroup || !portGroup || !cudaGroup || !argsGroup || !runpodTextElem || !hostInput || !portInput) {
+                    return; // Elements not ready yet
                 }
-            } else if (workerType === "cloud") {
-                hostGroup.style.display = "flex";
-                portGroup.style.display = "flex"; // Keep port visible for cloud workers
-                cudaGroup.style.display = "none";
-                argsGroup.style.display = "none";
-                runpodTextElem.style.display = "block";
-                // Update placeholder for cloud workers
-                hostInput.placeholder = "e.g., your-cloud-worker.trycloudflare.com";
-                // Set port to 443 for cloud workers
-                portInput.value = "443";
-                // If switching to cloud and host is localhost, clear it
-                if (hostInput.value === "localhost" || hostInput.value === "127.0.0.1") {
-                    hostInput.value = "";
+                
+                if (workerType === "local") {
+                    hostGroup.style.display = "none";
+                    portGroup.style.display = "flex";
+                    cudaGroup.style.display = "flex";
+                    argsGroup.style.display = "flex";
+                    runpodTextElem.style.display = "none";
+                } else if (workerType === "remote") {
+                    hostGroup.style.display = "flex";
+                    portGroup.style.display = "flex";
+                    cudaGroup.style.display = "none";
+                    argsGroup.style.display = "none";
+                    runpodTextElem.style.display = "none";
+                    // Update placeholder for remote workers
+                    hostInput.placeholder = "e.g., 192.168.1.100";
+                    // If switching to remote and host is localhost, clear it
+                    if (hostInput.value === "localhost" || hostInput.value === "127.0.0.1") {
+                        hostInput.value = "";
+                    }
+                } else if (workerType === "cloud") {
+                    hostGroup.style.display = "flex";
+                    portGroup.style.display = "flex"; // Keep port visible for cloud workers
+                    cudaGroup.style.display = "none";
+                    argsGroup.style.display = "none";
+                    runpodTextElem.style.display = "block";
+                    // Update placeholder for cloud workers
+                    hostInput.placeholder = "e.g., your-cloud-worker.trycloudflare.com";
+                    // Set port to 443 for cloud workers
+                    portInput.value = "443";
+                    // If switching to cloud and host is localhost, clear it
+                    if (hostInput.value === "localhost" || hostInput.value === "127.0.0.1") {
+                        hostInput.value = "";
+                    }
                 }
-            }
+            };
         };
         
         typeGroup.appendChild(typeLabel);
         typeGroup.appendChild(typeSelect);
         typeGroup.appendChild(runpodText);
         form.appendChild(typeGroup);
-        
-        // Set initial value based on worker type
-        if (worker.type === "cloud") {
-            typeSelect.value = "cloud";
-            // Show Runpod text immediately for cloud workers
-            runpodText.style.display = "block";
-        } else if (extension.isRemoteWorker(worker)) {
-            typeSelect.value = "remote";
-        } else {
-            typeSelect.value = "local";
-        }
-        
-        // Trigger initial state
-        typeSelect.dispatchEvent(new Event('change'));
         
         // Host field (only for remote workers)
         const hostGroup = this.createFormGroup("Host:", worker.host || "", `host-${worker.id}`, "text", "e.g., 192.168.1.100");
@@ -674,6 +668,23 @@ export class DistributedUI {
         
         const buttonGroup = this.createButtonGroup([saveBtn, cancelBtn, deleteBtn], " margin-top: 8px;");
         form.appendChild(buttonGroup);
+        
+        // Assign the onchange handler now that all elements are created
+        typeSelect.onchange = createOnChangeHandler();
+        
+        // Set initial value and trigger state after all DOM elements are created
+        if (worker.type === "cloud") {
+            typeSelect.value = "cloud";
+            // Show Runpod text immediately for cloud workers
+            runpodText.style.display = "block";
+        } else if (extension.isRemoteWorker(worker)) {
+            typeSelect.value = "remote";
+        } else {
+            typeSelect.value = "local";
+        }
+        
+        // Trigger initial state now that all elements exist
+        typeSelect.dispatchEvent(new Event('change'));
         
         return form;
     }

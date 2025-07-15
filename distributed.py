@@ -1638,11 +1638,87 @@ class DistributedSeed:
                 # Fallback: return original seed
                 return (seed,)
 
+# Define ByPassTypeTuple for flexible return types
+class AnyType(str):
+    def __ne__(self, __value: object) -> bool:
+        return False
+
+any_type = AnyType("*")
+
+class ByPassTypeTuple(tuple):
+    def __getitem__(self, index):
+        if index > 0:
+            index = 0
+        item = super().__getitem__(index)
+        if isinstance(item, str):
+            return any_type
+        return item
+
+class ImageBatchDivider:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "divide_by": ("INT", {
+                    "default": 2, 
+                    "min": 1, 
+                    "max": 10, 
+                    "step": 1,
+                    "display": "number",
+                    "tooltip": "Number of parts to divide the batch into"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ByPassTypeTuple(("IMAGE", ))  # Flexible for variable outputs
+    RETURN_NAMES = ByPassTypeTuple(tuple([f"batch_{i+1}" for i in range(10)]))
+    FUNCTION = "divide_batch"
+    OUTPUT_NODE = True
+    CATEGORY = "image"
+    
+    def divide_batch(self, images, divide_by):
+        import torch
+        
+        # Use divide_by directly
+        total_splits = divide_by
+        
+        if total_splits > 10:
+            total_splits = 10  # Cap to max
+        
+        # Get total number of frames
+        total_frames = images.shape[0]
+        frames_per_split = total_frames // total_splits
+        remainder = total_frames % total_splits
+        
+        outputs = []
+        start_idx = 0
+        
+        for i in range(total_splits):
+            current_frames = frames_per_split + (1 if i < remainder else 0)
+            end_idx = start_idx + current_frames
+            split_frames = images[start_idx:end_idx]
+            outputs.append(split_frames)
+            start_idx = end_idx
+        
+        # Pad with empty tensors up to max (10) to match potential RETURN_TYPES len
+        empty_shape = (1, images.shape[1], images.shape[2], images.shape[3]) if total_frames > 0 else (1, 512, 512, 3)
+        empty_tensor = torch.zeros(empty_shape, dtype=images.dtype if total_frames > 0 else torch.float32, 
+                                   device=images.device if total_frames > 0 else 'cpu')
+        
+        while len(outputs) < 10:
+            outputs.append(empty_tensor)
+        
+        return tuple(outputs)
+
+
 NODE_CLASS_MAPPINGS = { 
     "DistributedCollector": DistributedCollectorNode,
-    "DistributedSeed": DistributedSeed
+    "DistributedSeed": DistributedSeed,
+    "ImageBatchDivider": ImageBatchDivider
 }
 NODE_DISPLAY_NAME_MAPPINGS = { 
     "DistributedCollector": "Distributed Collector",
-    "DistributedSeed": "Distributed Seed"
+    "DistributedSeed": "Distributed Seed",
+    "ImageBatchDivider": "Image Batch Divider"
 }
