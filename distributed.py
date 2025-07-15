@@ -14,6 +14,7 @@ import platform
 import time
 import atexit
 import signal
+from comfy.utils import ProgressBar
 
 # Import shared utilities
 from .utils.logging import debug_log, log
@@ -1299,38 +1300,76 @@ async def job_complete_endpoint(request):
     try:
         data = await request.post()
         multi_job_id = data.get('multi_job_id')
-        image_file = data.get('image')
         worker_id = data.get('worker_id')
-        image_index = data.get('image_index')
         is_last = data.get('is_last', 'False').lower() == 'true'
+        
+        if multi_job_id is None or worker_id is None:
+            return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
 
-        debug_log(f"job_complete received - job_id: {multi_job_id}, worker: {worker_id}, index: {image_index}, is_last: {is_last}")
+        # Check for batch mode
+        batch_size = int(data.get('batch_size', 0))
+        tensors = []
+        
+        if batch_size > 0:
+            # Batch mode: Extract multiple images
+            debug_log(f"job_complete received batch - job_id: {multi_job_id}, worker: {worker_id}, batch_size: {batch_size}")
+            
+            for i in range(batch_size):
+                image_field = data.get(f'image_{i}')
+                if image_field is None:
+                    return await handle_api_error(request, f"Missing image_{i}", 400)
+                    
+                try:
+                    img_data = image_field.file.read()
+                    img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                    tensor = pil_to_tensor(img)
+                    tensor = ensure_contiguous(tensor)
+                    tensors.append(tensor)
+                except Exception as e:
+                    log(f"Error processing image {i} from worker {worker_id}: {e}")
+                    return await handle_api_error(request, f"Image processing error: {e}", 400)
+        else:
+            # Fallback for single-image mode (backward compatibility)
+            image_file = data.get('image')
+            image_index = data.get('image_index')
+            
+            debug_log(f"job_complete received single - job_id: {multi_job_id}, worker: {worker_id}, index: {image_index}, is_last: {is_last}")
+            
+            if not image_file:
+                return await handle_api_error(request, "Missing image data", 400)
+                
+            try:
+                img_data = image_file.file.read()
+                img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                tensor = pil_to_tensor(img)
+                tensor = ensure_contiguous(tensor)
+                tensors = [tensor]
+            except Exception as e:
+                log(f"Error processing image from worker {worker_id}: {e}")
+                return await handle_api_error(request, f"Image processing error: {e}", 400)
 
-        if not all([multi_job_id, image_file]):
-            return await handle_api_error(request, "Missing job_id or image data", 400)
-
-        # Process image with error handling
-        try:
-            img_data = image_file.file.read()
-            img = Image.open(io.BytesIO(img_data)).convert("RGB")
-            # Convert to tensor using utility function
-            tensor = pil_to_tensor(img)
-            # Ensure tensor is contiguous
-            tensor = ensure_contiguous(tensor)
-        except Exception as e:
-            log(f"Error processing image from worker {worker_id}: {e}")
-            return await handle_api_error(request, f"Image processing error: {e}", 400)
-
+        # Put batch into queue
         async with prompt_server.distributed_jobs_lock:
             debug_log(f"Current pending jobs: {list(prompt_server.distributed_pending_jobs.keys())}")
             if multi_job_id in prompt_server.distributed_pending_jobs:
-                await prompt_server.distributed_pending_jobs[multi_job_id].put({
-                    'tensor': tensor,
-                    'worker_id': worker_id,
-                    'image_index': int(image_index) if image_index else 0,
-                    'is_last': is_last
-                })
-                debug_log(f"Received result for job {multi_job_id} from worker {worker_id} (last: {is_last})")
+                if batch_size > 0:
+                    # Put batch as single item
+                    await prompt_server.distributed_pending_jobs[multi_job_id].put({
+                        'worker_id': worker_id,
+                        'tensors': tensors,
+                        'is_last': is_last
+                    })
+                    debug_log(f"Received batch result for job {multi_job_id} from worker {worker_id}, size={len(tensors)}")
+                else:
+                    # Put single image (backward compat)
+                    await prompt_server.distributed_pending_jobs[multi_job_id].put({
+                        'tensor': tensors[0],
+                        'worker_id': worker_id,
+                        'image_index': int(image_index) if image_index else 0,
+                        'is_last': is_last
+                    })
+                    debug_log(f"Received single result for job {multi_job_id} from worker {worker_id}")
+                    
                 debug_log(f"Queue size after put: {prompt_server.distributed_pending_jobs[multi_job_id].qsize()}")
                 return web.json_response({"status": "success"})
             else:
@@ -1373,6 +1412,33 @@ class DistributedCollectorNode:
         )
         return result
 
+    async def send_batch_to_master(self, image_batch, multi_job_id, master_url, worker_id):
+        """Send entire image batch in one POST using multi-part FormData"""
+        data = aiohttp.FormData()
+        data.add_field('multi_job_id', multi_job_id)
+        data.add_field('worker_id', str(worker_id))
+        data.add_field('is_last', 'True')  # Full batch, so last for this worker
+        data.add_field('batch_size', str(image_batch.shape[0]))  # Number of images in batch
+
+        # Loop to add each image as a separate field
+        for i in range(image_batch.shape[0]):
+            # Convert tensor slice to PIL
+            img = tensor_to_pil(image_batch[i:i+1], 0)  # tensor_to_pil handles single-image batch
+            byte_io = io.BytesIO()
+            img.save(byte_io, format='PNG', compress_level=0)  # Lossless, no compression for speed
+            byte_io.seek(0)
+            data.add_field(f'image_{i}', byte_io, filename=f'image_{i}.png', content_type='image/png')
+
+        try:
+            session = await get_client_session()
+            url = f"{master_url}/distributed/job_complete"
+            debug_log(f"Worker - Sending batch of {image_batch.shape[0]} images to URL: {url}")
+            async with session.post(url, data=data) as response:
+                response.raise_for_status()
+        except Exception as e:
+            log(f"Worker - Failed to send batch to master: {e}")
+            debug_log(f"Worker - Full error details: URL={url}")
+
     async def send_image_to_master(self, image_tensor, multi_job_id, master_url, image_index, worker_id, is_last=False):
         """Helper method to send a single image to the master"""
         # Ensure we handle the tensor shape correctly (H, W, C)
@@ -1405,14 +1471,9 @@ class DistributedCollectorNode:
 
     async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id=""):
         if is_worker:
-            # Worker mode: send images to master
+            # Worker mode: send images to master in a single batch
             debug_log(f"Worker - Job {multi_job_id} complete. Sending {images.shape[0]} image(s) to master")
-            
-            # Send all images, marking the last one
-            for i in range(images.shape[0]):
-                is_last = (i == images.shape[0] - 1)
-                await self.send_image_to_master(images[i], multi_job_id, master_url, i, worker_id, is_last)
-            
+            await self.send_batch_to_master(images, multi_job_id, master_url, worker_id)
             return (images,)
         else:
             # Master mode: collect images from workers
@@ -1457,7 +1518,12 @@ class DistributedCollectorNode:
                 q = prompt_server.distributed_pending_jobs[multi_job_id]
                 initial_size = q.qsize()
             debug_log(f"Master - Queue size before collection: {initial_size}")
-            
+
+            # NEW: Initialize progress bar with estimated total images
+            expected_total = master_batch_size + (num_workers * worker_batch_size)  # Estimate; adjust if batch sizes vary
+            p = ProgressBar(expected_total)
+            p.update(master_batch_size)  # Start with master's contribution (already "collected")
+
             while len(workers_done) < num_workers:
                 try:
                     # Get the queue again each time to ensure we have the right reference
@@ -1469,21 +1535,48 @@ class DistributedCollectorNode:
                     
                     result = await asyncio.wait_for(q.get(), timeout=timeout)
                     worker_id = result['worker_id']
-                    image_index = result['image_index']
-                    tensor = result['tensor']
                     is_last = result.get('is_last', False)
                     
-                    debug_log(f"Master - Got result from worker {worker_id}, image {image_index}, is_last={is_last}")
-                    
-                    if worker_id not in worker_images:
-                        worker_images[worker_id] = {}
-                    worker_images[worker_id][image_index] = tensor
-                    
-                    # Debug: Check worker tensor properties
-                    if collected_count == 0:  # Only print once
-                        debug_log(f"Master - Worker tensor - shape: {tensor.shape}, dtype: {tensor.dtype}, device: {tensor.device}")
-                    
-                    collected_count += 1
+                    # Check if batch mode
+                    tensors = result.get('tensors', [])
+                    if tensors:
+                        # Batch mode
+                        debug_log(f"Master - Got batch from worker {worker_id}, size={len(tensors)}, is_last={is_last}")
+                        
+                        if worker_id not in worker_images:
+                            worker_images[worker_id] = {}
+                        
+                        # Add all tensors with sequential indices
+                        for idx, tensor in enumerate(tensors):
+                            worker_images[worker_id][idx] = tensor
+                            
+                            # Debug: Check worker tensor properties
+                            if collected_count == 0:  # Only print once
+                                debug_log(f"Master - Worker tensor - shape: {tensor.shape}, dtype: {tensor.dtype}, device: {tensor.device}")
+                        
+                        collected_count += len(tensors)
+                        
+                        # Update progress for batch
+                        p.update(len(tensors))
+                    else:
+                        # Single image mode (backward compat)
+                        image_index = result['image_index']
+                        tensor = result['tensor']
+                        
+                        debug_log(f"Master - Got single result from worker {worker_id}, image {image_index}, is_last={is_last}")
+                        
+                        if worker_id not in worker_images:
+                            worker_images[worker_id] = {}
+                        worker_images[worker_id][image_index] = tensor
+                        
+                        # Debug: Check worker tensor properties
+                        if collected_count == 0:  # Only print once
+                            debug_log(f"Master - Worker tensor - shape: {tensor.shape}, dtype: {tensor.dtype}, device: {tensor.device}")
+                        
+                        collected_count += 1
+                        
+                        # Update progress for single image
+                        p.update(1)
                     
                     # Once we start receiving images, use shorter timeout
                     timeout = WORKER_JOB_TIMEOUT
@@ -1519,15 +1612,31 @@ class DistributedCollectorNode:
                                 # Process them
                                 for item in remaining_items:
                                     worker_id = item['worker_id']
-                                    image_index = item['image_index']
-                                    tensor = item['tensor']
                                     is_last = item.get('is_last', False)
                                     
-                                    if worker_id not in worker_images:
-                                        worker_images[worker_id] = {}
-                                    worker_images[worker_id][image_index] = tensor
-                                    
-                                    collected_count += 1
+                                    # Check if batch mode
+                                    tensors = item.get('tensors', [])
+                                    if tensors:
+                                        # Batch mode
+                                        if worker_id not in worker_images:
+                                            worker_images[worker_id] = {}
+                                        
+                                        for idx, tensor in enumerate(tensors):
+                                            worker_images[worker_id][idx] = tensor
+                                        
+                                        collected_count += len(tensors)
+                                        p.update(len(tensors))
+                                    else:
+                                        # Single image mode
+                                        image_index = item['image_index']
+                                        tensor = item['tensor']
+                                        
+                                        if worker_id not in worker_images:
+                                            worker_images[worker_id] = {}
+                                        worker_images[worker_id][image_index] = tensor
+                                        
+                                        collected_count += 1
+                                        p.update(1)
                                     
                                     if is_last:
                                         workers_done.add(worker_id)
