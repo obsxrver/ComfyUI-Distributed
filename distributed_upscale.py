@@ -174,10 +174,10 @@ class UltimateSDUpscaleDistributed:
                 'extracted_height': eh
             })
         
-        # Send results back using the server's event loop
+        # Send results back using the server's event loop in a single batch
         try:
             run_async_in_server_loop(
-                self._async_send_tiles_to_master(processed_tiles, multi_job_id, master_url,
+                self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url,
                                                padding, worker_id),
                 timeout=TILE_SEND_TIMEOUT
             )
@@ -185,18 +185,6 @@ class UltimateSDUpscaleDistributed:
             log(f"UltimateSDUpscale Worker - Error sending tiles: {e}")
         
         return (upscaled_image,)
-    
-    async def _async_send_tiles_to_master(self, processed_tiles, multi_job_id, master_url,
-                                         padding, worker_id):
-        """Async helper to send tiles to master."""
-        for i, tile_data in enumerate(processed_tiles):
-            is_last = (i == len(processed_tiles) - 1)
-            await self.send_tile_to_master(
-                tile_data['tile'], multi_job_id, master_url,
-                tile_data['tile_idx'], tile_data['x'], tile_data['y'],
-                tile_data['extracted_width'], tile_data['extracted_height'],
-                padding, worker_id, is_last
-            )
     
     def process_master(self, upscaled_image, model, positive, negative, vae,
                       seed, steps, cfg, sampler_name, scheduler, denoise,
@@ -433,12 +421,33 @@ class UltimateSDUpscaleDistributed:
             debug_log(f"UltimateSDUpscale Master - Loop status: {len(workers_done)}/{num_workers} workers done, {len(collected_tiles)} tiles collected, workers_done set: {workers_done}")
             try:
                 result = await asyncio.wait_for(q.get(), timeout=timeout)
-                tile_idx = result['tile_idx']
                 worker_id = result['worker_id']
                 is_last = result.get('is_last', False)
                 
-                collected_tiles[tile_idx] = result
-                debug_log(f"UltimateSDUpscale Master - Received tile {tile_idx} from worker '{worker_id}' (is_last={is_last})")
+                # Check if batch mode
+                tiles = result.get('tiles', [])
+                if tiles:
+                    # Batch mode
+                    debug_log(f"UltimateSDUpscale Master - Received batch of {len(tiles)} tiles from worker '{worker_id}' (is_last={is_last})")
+                    
+                    for tile_data in tiles:
+                        tile_idx = tile_data['tile_idx']
+                        # Store the full tile data including metadata
+                        collected_tiles[tile_idx] = {
+                            'tensor': tile_data['tensor'],
+                            'tile_idx': tile_idx,
+                            'x': tile_data['x'],
+                            'y': tile_data['y'],
+                            'extracted_width': tile_data['extracted_width'],
+                            'extracted_height': tile_data['extracted_height'],
+                            'padding': tile_data['padding'],
+                            'worker_id': worker_id
+                        }
+                else:
+                    # Single tile mode (backward compat)
+                    tile_idx = result['tile_idx']
+                    collected_tiles[tile_idx] = result
+                    debug_log(f"UltimateSDUpscale Master - Received single tile {tile_idx} from worker '{worker_id}' (is_last={is_last})")
                 
                 if is_last:
                     workers_done.add(worker_id)
@@ -603,6 +612,59 @@ class UltimateSDUpscaleDistributed:
         return result.convert('RGB')
     
     
+    async def send_tiles_batch_to_master(self, processed_tiles, multi_job_id, master_url, 
+                                       padding, worker_id):
+        """Send all processed tiles to master in a single batch request."""
+        data = aiohttp.FormData()
+        data.add_field('multi_job_id', multi_job_id)
+        data.add_field('worker_id', str(worker_id))
+        data.add_field('is_last', 'True')  # Full batch, so last for this worker
+        data.add_field('batch_size', str(len(processed_tiles)))
+        data.add_field('padding', str(padding))
+        
+        # Add each tile as a separate field with metadata
+        for i, tile_data in enumerate(processed_tiles):
+            # Convert tensor to PIL
+            img = tensor_to_pil(tile_data['tile'], 0)
+            byte_io = io.BytesIO()
+            img.save(byte_io, format='PNG', compress_level=0)
+            byte_io.seek(0)
+            
+            # Add image field
+            data.add_field(f'tile_{i}', byte_io, filename=f'tile_{i}.png', content_type='image/png')
+            
+            # Add metadata for this tile
+            data.add_field(f'tile_{i}_idx', str(tile_data['tile_idx']))
+            data.add_field(f'tile_{i}_x', str(tile_data['x']))
+            data.add_field(f'tile_{i}_y', str(tile_data['y']))
+            data.add_field(f'tile_{i}_width', str(tile_data['extracted_width']))
+            data.add_field(f'tile_{i}_height', str(tile_data['extracted_height']))
+        
+        # Retry logic with exponential backoff
+        max_retries = 5
+        retry_delay = 0.5
+        
+        for attempt in range(max_retries):
+            try:
+                session = await get_client_session()
+                url = f"{master_url}/distributed/tile_complete"
+                
+                debug_log(f"UltimateSDUpscale Worker - Sending batch of {len(processed_tiles)} tiles to {url}, attempt {attempt + 1}")
+                
+                async with session.post(url, data=data) as response:
+                    response.raise_for_status()
+                    debug_log(f"UltimateSDUpscale Worker - Successfully sent batch of {len(processed_tiles)} tiles")
+                    return
+                    
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    debug_log(f"UltimateSDUpscale Worker - Retry {attempt + 1}/{max_retries} after error: {e}")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    log(f"UltimateSDUpscale Worker - Failed to send batch after {max_retries} attempts: {e}")
+                    raise
+
     async def send_tile_to_master(self, tile_tensor, multi_job_id, master_url, 
                                  tile_idx, x, y, extracted_width, extracted_height, 
                                  padding, worker_id, is_last=False):
@@ -714,43 +776,119 @@ async def tile_complete_endpoint(request):
     try:
         data = await request.post()
         multi_job_id = data.get('multi_job_id')
-        image_file = data.get('image')
         worker_id = data.get('worker_id')
-        tile_idx = int(data.get('tile_idx', 0))
-        x = int(data.get('x', 0))
-        y = int(data.get('y', 0))
-        extracted_width = int(data.get('extracted_width', 512))
-        extracted_height = int(data.get('extracted_height', 512))
-        padding = int(data.get('padding', 32))
         is_last = data.get('is_last', 'False').lower() == 'true'
-
-        if not all([multi_job_id, image_file]):
-            return await handle_api_error(request, "Missing job_id or image data", 400)
-
-        # Process image
-        img_data = image_file.file.read()
-        img = Image.open(io.BytesIO(img_data)).convert("RGB")
-        img_np = np.array(img).astype(np.float32) / 255.0
-        tensor = torch.from_numpy(img_np)[None,]
+        
+        if multi_job_id is None or worker_id is None:
+            return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
 
         prompt_server = ensure_tile_jobs_initialized()
-        async with prompt_server.distributed_tile_jobs_lock:
-            debug_log(f"UltimateSDUpscale - tile_complete: Checking distributed_pending_tile_jobs for job {multi_job_id}")
-            debug_log(f"UltimateSDUpscale - tile_complete: Current jobs in distributed_pending_tile_jobs: {list(prompt_server.distributed_pending_tile_jobs.keys())}")
-            if multi_job_id in prompt_server.distributed_pending_tile_jobs:
-                await prompt_server.distributed_pending_tile_jobs[multi_job_id].put({
+        
+        # Check for batch mode
+        batch_size = int(data.get('batch_size', 0))
+        tiles = []
+        
+        if batch_size > 0:
+            # Batch mode: Extract multiple tiles
+            padding = int(data.get('padding', 32))
+            debug_log(f"UltimateSDUpscale - tile_complete batch - job_id: {multi_job_id}, worker: {worker_id}, batch_size: {batch_size}")
+            
+            for i in range(batch_size):
+                tile_field = data.get(f'tile_{i}')
+                if tile_field is None:
+                    return await handle_api_error(request, f"Missing tile_{i}", 400)
+                
+                # Get metadata for this tile
+                tile_idx = int(data.get(f'tile_{i}_idx', i))
+                x = int(data.get(f'tile_{i}_x', 0))
+                y = int(data.get(f'tile_{i}_y', 0))
+                extracted_width = int(data.get(f'tile_{i}_width', 512))
+                extracted_height = int(data.get(f'tile_{i}_height', 512))
+                
+                try:
+                    # Process image
+                    img_data = tile_field.file.read()
+                    img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                    img_np = np.array(img).astype(np.float32) / 255.0
+                    tensor = torch.from_numpy(img_np)[None,]
+                    
+                    tiles.append({
+                        'tensor': tensor,
+                        'tile_idx': tile_idx,
+                        'x': x,
+                        'y': y,
+                        'extracted_width': extracted_width,
+                        'extracted_height': extracted_height,
+                        'padding': padding
+                    })
+                except Exception as e:
+                    log(f"Error processing tile {i} from worker {worker_id}: {e}")
+                    return await handle_api_error(request, f"Tile processing error: {e}", 400)
+        else:
+            # Single tile mode (backward compatibility)
+            image_file = data.get('image')
+            if not image_file:
+                return await handle_api_error(request, "Missing image data", 400)
+                
+            tile_idx = int(data.get('tile_idx', 0))
+            x = int(data.get('x', 0))
+            y = int(data.get('y', 0))
+            extracted_width = int(data.get('extracted_width', 512))
+            extracted_height = int(data.get('extracted_height', 512))
+            padding = int(data.get('padding', 32))
+            
+            debug_log(f"UltimateSDUpscale - tile_complete single - job_id: {multi_job_id}, worker: {worker_id}, tile: {tile_idx}")
+            
+            try:
+                # Process image
+                img_data = image_file.file.read()
+                img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                img_np = np.array(img).astype(np.float32) / 255.0
+                tensor = torch.from_numpy(img_np)[None,]
+                
+                tiles = [{
                     'tensor': tensor,
-                    'worker_id': worker_id,
                     'tile_idx': tile_idx,
                     'x': x,
                     'y': y,
                     'extracted_width': extracted_width,
                     'extracted_height': extracted_height,
-                    'padding': padding,
-                    'is_last': is_last
-                })
-                debug_log(f"UltimateSDUpscale - Received tile {tile_idx} for job {multi_job_id} from worker {worker_id} (last: {is_last})")
-                debug_log(f"UltimateSDUpscale - tile_complete: Successfully queued tile {tile_idx}")
+                    'padding': padding
+                }]
+            except Exception as e:
+                log(f"Error processing tile from worker {worker_id}: {e}")
+                return await handle_api_error(request, f"Tile processing error: {e}", 400)
+
+        # Put tiles into queue
+        async with prompt_server.distributed_tile_jobs_lock:
+            debug_log(f"UltimateSDUpscale - tile_complete: Checking distributed_pending_tile_jobs for job {multi_job_id}")
+            debug_log(f"UltimateSDUpscale - tile_complete: Current jobs in distributed_pending_tile_jobs: {list(prompt_server.distributed_pending_tile_jobs.keys())}")
+            
+            if multi_job_id in prompt_server.distributed_pending_tile_jobs:
+                if batch_size > 0:
+                    # Put batch as single item  
+                    await prompt_server.distributed_pending_tile_jobs[multi_job_id].put({
+                        'worker_id': worker_id,
+                        'tiles': tiles,
+                        'is_last': is_last
+                    })
+                    debug_log(f"UltimateSDUpscale - Received batch of {len(tiles)} tiles for job {multi_job_id} from worker {worker_id}")
+                else:
+                    # Put single tile (backward compat)
+                    tile_data = tiles[0]
+                    await prompt_server.distributed_pending_tile_jobs[multi_job_id].put({
+                        'tensor': tile_data['tensor'],
+                        'worker_id': worker_id,
+                        'tile_idx': tile_data['tile_idx'],
+                        'x': tile_data['x'],
+                        'y': tile_data['y'],
+                        'extracted_width': tile_data['extracted_width'],
+                        'extracted_height': tile_data['extracted_height'],
+                        'padding': tile_data['padding'],
+                        'is_last': is_last
+                    })
+                    debug_log(f"UltimateSDUpscale - Received single tile {tile_data['tile_idx']} for job {multi_job_id} from worker {worker_id}")
+                    
                 return web.json_response({"status": "success"})
             else:
                 debug_log(f"UltimateSDUpscale - API Error: Job {multi_job_id} not found in distributed_pending_tile_jobs")
