@@ -771,6 +771,12 @@ class DistributedExtension {
 
     async detectMasterIP() {
         try {
+            // Detect if we're running on Runpod
+            const isRunpod = window.location.hostname.endsWith('.proxy.runpod.net');
+            if (isRunpod) {
+                this.log("Detected Runpod environment", "info");
+            }
+            
             const data = await this.api.getNetworkInfo();
             this.log("Network info: " + JSON.stringify(data), "debug");
             
@@ -826,7 +832,8 @@ class DistributedExtension {
                             host: "localhost",
                             port: 8189 + portOffset,
                             cuda_device: i,
-                            enabled: true
+                            enabled: true,
+                            extra_args: isRunpod ? "--listen" : ""
                         };
                         newWorkers.push(worker);
                         workerNum++;
@@ -873,6 +880,30 @@ class DistributedExtension {
             if (this.config?.master?.host) {
                 this.log(`Master host already configured: ${this.config.master.host}`, "debug");
                 return;
+            }
+            
+            // For Runpod, use the proxy hostname as master host
+            if (isRunpod) {
+                const runpodHost = window.location.hostname;
+                this.log(`Setting Runpod master host: ${runpodHost}`, "info");
+                
+                // Save the Runpod host
+                await this.api.updateMaster({ host: runpodHost });
+                
+                // Update local config
+                if (!this.config.master) this.config.master = {};
+                this.config.master.host = runpodHost;
+                
+                // Show notification
+                if (app.extensionManager?.toast) {
+                    app.extensionManager.toast.add({
+                        severity: "info",
+                        summary: "Runpod Auto-Configuration",
+                        detail: `Master host set to ${runpodHost} with --listen flag for workers`,
+                        life: 5000
+                    });
+                }
+                return; // Skip regular IP detection for Runpod
             }
             
             // Use the recommended IP from the backend
