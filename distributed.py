@@ -14,6 +14,8 @@ import platform
 import time
 import atexit
 import signal
+import sys
+import shlex
 from comfy.utils import ProgressBar
 
 # Import shared utilities
@@ -781,9 +783,20 @@ class WorkerProcessManager:
             
             raise RuntimeError(error_msg)
         
-        # Add any extra arguments
+        # Add any extra arguments safely
         if worker_config.get('extra_args'):
-            cmd.extend(worker_config['extra_args'].split())
+            raw_args = worker_config['extra_args'].strip()
+            if raw_args:
+                # Safely split using shlex to handle quotes and spaces
+                extra_args_list = shlex.split(raw_args)
+                
+                # Validate: Block dangerous shell meta-characters (e.g., ; | & > < ` $)
+                forbidden_chars = set(';|>&<`$()[]{}*!?')
+                for arg in extra_args_list:
+                    if any(c in forbidden_chars for c in arg):
+                        raise ValueError(f"Invalid characters in extra_args: {arg}. Forbidden: {''.join(forbidden_chars)}")
+                
+                cmd.extend(extra_args_list)
             
         return cmd
         
@@ -1210,15 +1223,9 @@ def delayed_auto_launch():
     timer.daemon = True
     timer.start()
 
-# Call delayed auto-launch only if we're the master (not a worker)
-if not os.environ.get('COMFYUI_MASTER_PID'):
-    delayed_auto_launch()
-else:
-    debug_log("Running as worker, skipping auto-launch")
-
-# Register cleanup on exit - only clean up if setting is enabled
-def cleanup_on_exit(signum=None, frame=None):
-    """Handle cleanup on exit or signal"""
+# Async cleanup function for proper shutdown
+async def async_cleanup_and_exit(signum=None):
+    """Async-friendly cleanup and exit."""
     try:
         config = load_config()
         if config.get('settings', {}).get('stop_workers_on_master_exit', True):
@@ -1226,24 +1233,95 @@ def cleanup_on_exit(signum=None, frame=None):
             worker_manager.cleanup_all()
         else:
             print("\n[Distributed] Master shutting down, workers will continue running")
-            # Still save the current state
+            worker_manager.save_processes()
+    except Exception as e:
+        print(f"[Distributed] Error during cleanup: {e}")
+    
+    # On Windows, we need to exit differently
+    if platform.system() == "Windows":
+        # Force exit on Windows
+        sys.exit(0)
+    else:
+        # On Unix, stop the event loop gracefully
+        loop = asyncio.get_running_loop()
+        loop.stop()
+
+def register_async_signals():
+    """Register async signal handlers for graceful shutdown."""
+    if platform.system() == "Windows":
+        # Windows doesn't support add_signal_handler, use traditional signal handling
+        def signal_handler(signum, frame):
+            # Schedule the async cleanup in the event loop
+            loop = server.PromptServer.instance.loop
+            if loop and loop.is_running():
+                asyncio.run_coroutine_threadsafe(async_cleanup_and_exit(signum), loop)
+            else:
+                # Fallback to sync cleanup if loop isn't running
+                try:
+                    config = load_config()
+                    if config.get('settings', {}).get('stop_workers_on_master_exit', True):
+                        print("\n[Distributed] Master shutting down, stopping all managed workers...")
+                        worker_manager.cleanup_all()
+                    else:
+                        print("\n[Distributed] Master shutting down, workers will continue running")
+                        worker_manager.save_processes()
+                except Exception as e:
+                    print(f"[Distributed] Error during cleanup: {e}")
+                sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+    else:
+        # Unix-like systems support add_signal_handler
+        loop = server.PromptServer.instance.loop
+        
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(async_cleanup_and_exit(s)))
+        
+        # SIGHUP is Unix-only
+        loop.add_signal_handler(signal.SIGHUP, lambda: asyncio.create_task(async_cleanup_and_exit(signal.SIGHUP)))
+
+def sync_cleanup():
+    """Synchronous wrapper for atexit."""
+    try:
+        # For atexit, we don't want to stop the loop or exit
+        config = load_config()
+        if config.get('settings', {}).get('stop_workers_on_master_exit', True):
+            print("\n[Distributed] Master shutting down, stopping all managed workers...")
+            worker_manager.cleanup_all()
+        else:
+            print("\n[Distributed] Master shutting down, workers will continue running")
             worker_manager.save_processes()
     except Exception as e:
         print(f"[Distributed] Error during cleanup: {e}")
 
-# Register cleanup handlers
-atexit.register(cleanup_on_exit)
+# Register atexit handler for normal exits
+atexit.register(sync_cleanup)
 
-# Handle terminal window closing and Ctrl+C
-try:
-    signal.signal(signal.SIGINT, cleanup_on_exit)
-    signal.signal(signal.SIGTERM, cleanup_on_exit)
-    
-    if platform.system() != "Windows":
-        # SIGHUP is sent when terminal closes on Unix
-        signal.signal(signal.SIGHUP, cleanup_on_exit)
-except Exception as e:
-    print(f"[Distributed] Warning: Could not set signal handlers: {e}")
+# Call delayed auto-launch only if we're the master (not a worker)
+if not os.environ.get('COMFYUI_MASTER_PID'):
+    delayed_auto_launch()
+    try:
+        register_async_signals()  # Register async signal handlers
+    except Exception as e:
+        print(f"[Distributed] Warning: Could not register async signal handlers: {e}")
+        # Fall back to basic signal handling
+        def basic_signal_handler(signum, frame):
+            print("\n[Distributed] Received signal, shutting down...")
+            try:
+                config = load_config()
+                if config.get('settings', {}).get('stop_workers_on_master_exit', True):
+                    worker_manager.cleanup_all()
+                else:
+                    worker_manager.save_processes()
+            except Exception as cleanup_error:
+                print(f"[Distributed] Error during cleanup: {cleanup_error}")
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, basic_signal_handler)
+        signal.signal(signal.SIGTERM, basic_signal_handler)
+else:
+    debug_log("Running as worker, skipping auto-launch")
 
 # --- Persistent State Storage ---
 # Store job queue on the persistent server instance to survive script reloads
