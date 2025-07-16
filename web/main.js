@@ -26,6 +26,9 @@ class DistributedExtension {
         
         // Initialize API client
         this.api = createApiClient(window.location.origin);
+        
+        // Initialize status check timeout reference
+        this.statusCheckTimeout = null;
 
         // Inject CSS for pulsing animation
         this.injectStyles();
@@ -206,9 +209,7 @@ class DistributedExtension {
     }
 
     startStatusChecking() {
-        this.statusCheckInterval = setInterval(() => {
-            this.checkAllWorkerStatuses();
-        }, TIMEOUTS.STATUS_CHECK);
+        this.checkAllWorkerStatuses();
     }
 
     async checkAllWorkerStatuses() {
@@ -223,6 +224,23 @@ class DistributedExtension {
                 this.checkWorkerStatus(worker);
             }
         }
+        
+        // Determine next interval based on current state
+        let isActive = this.state.getMasterStatus() === 'processing';  // Master is busy
+
+        // Check workers for activity
+        this.config.workers.forEach(worker => {
+            const ws = this.state.getWorker(worker.id);  // Get worker state
+            if (ws.launching || ws.status?.processing) {  // Launching or processing
+                isActive = true;
+            }
+        });
+
+        // Set next delay: 1s if active, 5s if idle
+        const nextInterval = isActive ? 1000 : 5000;
+
+        // Schedule the next check
+        this.statusCheckTimeout = setTimeout(() => this.checkAllWorkerStatuses(), nextInterval);
     }
 
     async checkMasterStatus() {
@@ -543,6 +561,11 @@ class DistributedExtension {
         if (this.logAutoRefreshInterval) {
             clearInterval(this.logAutoRefreshInterval);
             this.logAutoRefreshInterval = null;
+        }
+        
+        if (this.statusCheckTimeout) {
+            clearTimeout(this.statusCheckTimeout);
+            this.statusCheckTimeout = null;
         }
         
         this.log("Cleaned up intervals", "debug");

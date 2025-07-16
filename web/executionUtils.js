@@ -45,7 +45,9 @@ export function setupInterceptor(extension) {
             
             if (hasCollector || hasDistUpscale) {
                 const result = await executeParallelDistributed(extension, prompt);
-                // Check status after dispatching jobs
+                // Immediate status check for instant feedback
+                extension.checkAllWorkerStatuses();
+                // Another check after a short delay to catch state changes
                 setTimeout(() => extension.checkAllWorkerStatuses(), TIMEOUTS.POST_ACTION_DELAY);
                 return result;
             }
@@ -298,6 +300,10 @@ export async function executeJobs(extension, jobs) {
         }
     });
     await Promise.all(promises);
+    
+    // Trigger immediate status check for instant feedback
+    extension.checkAllWorkerStatuses();
+    
     return masterPromptId || { "prompt_id": "distributed-job-dispatched" };
 }
 
