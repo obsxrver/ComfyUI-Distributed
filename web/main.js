@@ -275,10 +275,15 @@ class DistributedExtension {
         // For local workers on Runpod, construct the port-specific proxy URL
         let finalHost = host;
         if (!worker.host && isRunpodProxy) {
-            // Extract pod ID from current host (format: podId-xxxx.proxy.runpod.net)
-            const podId = host.split('-')[0];
-            const domain = host.substring(host.indexOf('-') + 1);
-            finalHost = `${podId}-${worker.port}.${domain}`;
+            const match = host.match(/^(.*)\.proxy\.runpod\.net$/);
+            if (match) {
+                const podId = match[1];
+                const domain = 'proxy.runpod.net';
+                finalHost = `${podId}-${worker.port}.${domain}`;
+            } else {
+                // Fallback or log error if no match (shouldn't happen)
+                console.error(`[Distributed] Failed to parse Runpod proxy host: ${host}`);
+            }
         }
         
         // Determine protocol: HTTPS for cloud, Runpod proxies, or port 443
