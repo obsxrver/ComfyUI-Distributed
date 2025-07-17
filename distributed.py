@@ -16,6 +16,8 @@ import atexit
 import signal
 import sys
 import shlex
+import uuid
+from multiprocessing import Queue
 from comfy.utils import ProgressBar
 
 # Import shared utilities
@@ -257,6 +259,33 @@ async def get_network_info_endpoint(request):
             "all_ips": [],
             "recommended_ip": None
         })
+
+@server.PromptServer.instance.routes.get("/distributed/system_info")
+async def get_system_info_endpoint(request):
+    """Get system information including machine ID for local worker detection."""
+    try:
+        import socket
+        
+        return web.json_response({
+            "status": "success",
+            "hostname": socket.gethostname(),
+            "machine_id": get_machine_id(),
+            "platform": {
+                "system": platform.system(),
+                "machine": platform.machine(),
+                "node": platform.node(),
+                "path_separator": os.sep,  # Add path separator
+                "os_name": os.name  # Add OS name (posix, nt, etc.)
+            },
+            "is_docker": is_docker_environment(),
+            "is_runpod": is_runpod_environment(),
+            "runpod_pod_id": os.environ.get('RUNPOD_POD_ID')
+        })
+    except Exception as e:
+        return web.json_response({
+            "status": "error",
+            "message": str(e)
+        }, status=500)
 
 @server.PromptServer.instance.routes.post("/distributed/config/update_worker")
 async def update_worker_endpoint(request):
@@ -1156,6 +1185,106 @@ class WorkerProcessManager:
 # Create global instance
 worker_manager = WorkerProcessManager()
 
+# Add IPC queue storage
+worker_manager.queues = {}
+
+# Helper to get aiohttp session
+async def get_client_session():
+    """Get or create aiohttp client session."""
+    if not hasattr(server.PromptServer.instance, '_distributed_session'):
+        server.PromptServer.instance._distributed_session = aiohttp.ClientSession()
+    return server.PromptServer.instance._distributed_session
+
+# Local worker detection functions
+async def is_local_worker(worker_config):
+    """Check if a worker is running on the same machine as the master."""
+    host = worker_config.get('host', 'localhost')
+    if host in ['localhost', '127.0.0.1', '0.0.0.0', ''] or worker_config.get('type') == 'local':
+        return True
+    
+    # For cloud workers, check if on same physical host
+    if worker_config.get('type') == 'cloud':
+        return await is_same_physical_host(worker_config)
+    
+    return False
+
+async def is_same_physical_host(worker_config):
+    """Compare machine IDs to determine if worker is on same physical host."""
+    try:
+        # Get master machine ID
+        master_machine_id = get_machine_id()
+        
+        # Fetch worker's machine ID via API
+        host = worker_config.get('host', 'localhost')
+        port = worker_config.get('port', 8188)
+        
+        session = await get_client_session()
+        async with session.get(
+            f"http://{host}:{port}/distributed/system_info",
+            timeout=aiohttp.ClientTimeout(total=5)
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                worker_machine_id = data.get('machine_id')
+                return worker_machine_id == master_machine_id
+            else:
+                debug_log(f"Failed to get system info from worker: HTTP {resp.status}")
+                return False
+    except Exception as e:
+        debug_log(f"Error checking same physical host: {e}")
+        return False
+
+def get_machine_id():
+    """Get a unique identifier for this machine."""
+    # Try multiple methods to get a stable machine ID
+    try:
+        # Method 1: MAC address-based UUID
+        return str(uuid.getnode())
+    except:
+        try:
+            # Method 2: Platform + hostname
+            import socket
+            return f"{platform.machine()}_{socket.gethostname()}"
+        except:
+            # Fallback
+            return platform.machine()
+
+def is_docker_environment():
+    """Check if running inside Docker container."""
+    return (os.path.exists('/.dockerenv') or 
+            os.environ.get('DOCKER_CONTAINER', False) or
+            'docker' in platform.node().lower())
+
+def is_runpod_environment():
+    """Check if running in Runpod environment."""
+    return (os.environ.get('RUNPOD_POD_ID') is not None or
+            os.environ.get('RUNPOD_API_KEY') is not None)
+
+async def get_comms_channel(worker_id, worker_config):
+    """Get communication channel for a worker (HTTP URL or IPC Queue)."""
+    if await is_local_worker(worker_config):
+        comm_mode = worker_config.get('communicationMode', 'http')
+        
+        if comm_mode == 'ipc':
+            # Use multiprocessing Queue for IPC
+            if worker_id not in worker_manager.queues:
+                worker_manager.queues[worker_id] = Queue()
+            return worker_manager.queues[worker_id]
+        elif is_docker_environment():
+            # Docker: use host.docker.internal
+            return f"http://host.docker.internal:{worker_config['port']}"
+        else:
+            # Local: use loopback
+            return f"http://127.0.0.1:{worker_config['port']}"
+    elif worker_config.get('type') == 'cloud' and is_runpod_environment():
+        # Runpod same-host optimization (if detected)
+        host = worker_config.get('host', 'localhost')
+        return f"http://{host}:{worker_config['port']}"
+    else:
+        # Remote worker: use configured endpoint
+        host = worker_config.get('host', 'localhost')
+        return f"http://{host}:{worker_config['port']}"
+
 # Auto-launch workers if enabled
 def auto_launch_workers():
     """Launch enabled workers if auto_launch_workers is set to true."""
@@ -1335,7 +1464,7 @@ if not hasattr(prompt_server, 'distributed_pending_jobs'):
 
 @server.PromptServer.instance.routes.post("/distributed/load_image")
 async def load_image_endpoint(request):
-    """Load an image file and return it as base64 data."""
+    """Load an image or video file and return it as base64 data."""
     try:
         data = await request.json()
         image_path = data.get("image_path")
@@ -1345,30 +1474,58 @@ async def load_image_endpoint(request):
         
         import folder_paths
         import base64
-        from PIL import Image
         import io
         
-        # Use ComfyUI's folder paths to find the image
+        # Use ComfyUI's folder paths to find the file
         full_path = folder_paths.get_annotated_filepath(image_path)
         
         if not os.path.exists(full_path):
-            return await handle_api_error(request, f"Image not found: {image_path}", 404)
+            return await handle_api_error(request, f"File not found: {image_path}", 404)
         
-        # Load and convert to base64
-        with Image.open(full_path) as img:
-            # Convert to RGB if needed
-            if img.mode not in ('RGB', 'RGBA'):
-                img = img.convert('RGB')
+        # Check if it's a video file
+        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
+        file_ext = os.path.splitext(full_path)[1].lower()
+        
+        if file_ext in video_extensions:
+            # For video files, read the raw bytes
+            with open(full_path, 'rb') as f:
+                file_data = f.read()
             
-            # Save to bytes
-            buffer = io.BytesIO()
-            img.save(buffer, format='PNG', compress_level=1)  # Fast compression
-            img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        
-        return web.json_response({
-            "status": "success",
-            "image_data": f"data:image/png;base64,{img_base64}"
-        })
+            # Determine MIME type
+            mime_types = {
+                '.mp4': 'video/mp4',
+                '.avi': 'video/x-msvideo', 
+                '.mov': 'video/quicktime',
+                '.mkv': 'video/x-matroska',
+                '.webm': 'video/webm'
+            }
+            mime_type = mime_types.get(file_ext, 'video/mp4')
+            
+            # Return base64 encoded video with data URL
+            video_base64 = base64.b64encode(file_data).decode('utf-8')
+            return web.json_response({
+                "status": "success",
+                "image_data": f"data:{mime_type};base64,{video_base64}"
+            })
+        else:
+            # For images, use PIL
+            from PIL import Image
+            
+            # Load and convert to base64
+            with Image.open(full_path) as img:
+                # Convert to RGB if needed
+                if img.mode not in ('RGB', 'RGBA'):
+                    img = img.convert('RGB')
+                
+                # Save to bytes
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG', compress_level=1)  # Fast compression
+                img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            
+            return web.json_response({
+                "status": "success",
+                "image_data": f"data:image/png;base64,{img_base64}"
+            })
         
     except Exception as e:
         return await handle_api_error(request, e, 500)

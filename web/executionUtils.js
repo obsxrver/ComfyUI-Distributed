@@ -9,6 +9,12 @@ import { TIMEOUTS } from './constants.js';
  * @returns {Object} The converted API prompt
  */
 function convertPathsForPlatform(apiPrompt, targetSeparator) {
+    // Validate target separator
+    if (!targetSeparator || (targetSeparator !== '/' && targetSeparator !== '\\')) {
+        console.warn('[Distributed] Invalid target separator:', targetSeparator, '- skipping path conversion');
+        return apiPrompt;
+    }
+    
     // Regex to identify likely file paths with extensions
     const isLikelyFilename = (value) => {
         return value.match(/\.(ckpt|safetensors|pt|pth|bin|yaml|json|png|jpg|jpeg|webp|gif|bmp|latent|txt|vae|lora|embedding)(\s*\[\w+\])?$/i);
@@ -152,12 +158,15 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
             try {
                 const workerUrl = extension.getWorkerUrl(workerInfo);
                 const systemInfo = await getCachedWorkerSystemInfo(workerUrl);
-                const targetSeparator = systemInfo.platform.path_separator;
+                const targetSeparator = systemInfo?.platform?.path_separator;
                 
-                // Convert paths to match worker's platform
-                jobApiPrompt = convertPathsForPlatform(jobApiPrompt, targetSeparator);
-                
-                extension.log(`Converted paths for ${systemInfo.platform.system} worker ${participantId} (separator: '${targetSeparator}')`, "debug");
+                if (targetSeparator) {
+                    // Convert paths to match worker's platform
+                    jobApiPrompt = convertPathsForPlatform(jobApiPrompt, targetSeparator);
+                    extension.log(`Converted paths for ${systemInfo.platform.system} worker ${participantId} (separator: '${targetSeparator}')`, "debug");
+                } else {
+                    extension.log(`No path separator found for worker ${participantId}, skipping path conversion`, "debug");
+                }
             } catch (e) {
                 extension.log(`Failed to get system info for worker ${participantId}: ${e.message}`, "warn");
                 // Continue without path conversion
@@ -178,10 +187,10 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
         const isRemote = workerInfo && workerInfo.host;
         
         if (isRemote) {
-            // Find all image references in the pruned workflow
+            // Find all image/video references in the pruned workflow
             const imageReferences = findImageReferences(extension, jobApiPrompt);
             if (imageReferences.size > 0) {
-                extension.log(`Found ${imageReferences.size} image references for remote worker ${workerId}`, "debug");
+                extension.log(`Found ${imageReferences.size} media references (images/videos) for remote worker ${workerId}`, "debug");
                 // Store image references for later processing
                 options._imageReferences = imageReferences;
             }
@@ -284,7 +293,7 @@ export async function executeJobs(extension, jobs) {
     }
     
     if (allImageReferences.size > 0) {
-        extension.log(`Pre-loading ${allImageReferences.size} unique image(s) for all workers`, "debug");
+        extension.log(`Pre-loading ${allImageReferences.size} unique media file(s) for all workers`, "debug");
         await loadImagesForWorker(extension, allImageReferences);
     }
     
@@ -414,12 +423,12 @@ export async function uploadImagesToWorker(extension, workerUrl, images) {
     for (const imageData of images) {
         const formData = new FormData();
         
-        // Detect MIME type from base64 header
-        const mimeMatch = imageData.image.match(/^data:(image\/\w+);base64,/);
+        // Detect MIME type from base64 header (supports both image and video)
+        const mimeMatch = imageData.image.match(/^data:((?:image|video)\/\w+);base64,/);
         const mimeType = mimeMatch ? mimeMatch[1] : 'image/png'; // Default to PNG if not detected
         
         // Convert base64 to blob
-        const base64Data = imageData.image.replace(/^data:image\/\w+;base64,/, '');
+        const base64Data = imageData.image.replace(/^data:(?:image|video)\/\w+;base64,/, '');
         const byteCharacters = atob(base64Data);
         const byteNumbers = new Array(byteCharacters.length);
         for (let i = 0; i < byteCharacters.length; i++) {

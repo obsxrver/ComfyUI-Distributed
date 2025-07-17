@@ -88,21 +88,30 @@ export function findImageReferences(extension, apiPrompt) {
     // - Standard files: "image.png"
     // - Subfolder files: "subfolder/image.png"
     // - ComfyUI special format: "clipspace/file.png [input]"
-    const imageExtensions = /\.(png|jpg|jpeg|gif|webp|bmp)(\s*\[\w+\])?$/i;
+    // - Video files: "video.mp4", "animation.avi", etc.
+    const imageExtensions = /\.(png|jpg|jpeg|gif|webp|bmp|mp4|avi|mov|mkv|webm)(\s*\[\w+\])?$/i;
     
     for (const [nodeId, node] of Object.entries(apiPrompt)) {
+        // Check for both 'image' and 'video' inputs
+        const mediaInputs = [];
         if (node.inputs && node.inputs.image) {
-            const imageValue = node.inputs.image;
-            if (typeof imageValue === 'string') {
+            mediaInputs.push(node.inputs.image);
+        }
+        if (node.inputs && node.inputs.video) {
+            mediaInputs.push(node.inputs.video);
+        }
+        
+        for (const mediaValue of mediaInputs) {
+            if (typeof mediaValue === 'string') {
                 // Clean special suffixes like [input] or [output]
-                const cleanValue = imageValue.replace(/\s*\[\w+\]$/, '').trim();
+                const cleanValue = mediaValue.replace(/\s*\[\w+\]$/, '').trim();
                 if (imageExtensions.test(cleanValue)) {
                     images.set(cleanValue, {
                         nodeId,
                         nodeType: node.class_type,
-                        inputName: 'image'
+                        inputName: 'image'  // Keep as 'image' for compatibility
                     });
-                    extension.log(`Found image reference: ${cleanValue} in node ${nodeId} (${node.class_type})`, "debug");
+                    extension.log(`Found media reference: ${cleanValue} in node ${nodeId} (${node.class_type})`, "debug");
                 }
             }
         }
