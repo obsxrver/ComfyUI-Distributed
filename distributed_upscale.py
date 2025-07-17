@@ -1,15 +1,4 @@
-"""
-ComfyUI Distributed Upscale Module
-
-This module implements a distributed version of Ultimate SD Upscale with multi-mode
-batch handling for efficient processing of single images and video frames.
-
-Processing Modes:
-- Single GPU: Process all tiles locally when no workers are available
-- Static Mode: For small batches (≤ dynamic_threshold), flattens tiles across batch
-- Dynamic Mode: For large batches, assigns whole images to workers dynamically
-"""
-
+# Import statements (original + new)
 import torch
 import numpy as np
 from PIL import Image, ImageFilter, ImageDraw
@@ -37,6 +26,12 @@ from .utils.constants import (
     TILE_COLLECTION_TIMEOUT, TILE_WAIT_TIMEOUT, TILE_TRANSFER_TIMEOUT,
     QUEUE_INIT_TIMEOUT, TILE_SEND_TIMEOUT
 )
+
+# Import for controller support
+from .utils.usdu_utils import crop_cond
+
+# Additional import for deepcopy
+import copy
 
 # Make MAX_BATCH configurable
 MAX_BATCH = int(os.environ.get('COMFYUI_MAX_BATCH', '20'))
@@ -134,6 +129,7 @@ class UltimateSDUpscaleDistributed:
         """Force re-execution."""
         return float("nan")  # Always re-execute
     
+    
     def run(self, upscaled_image, model, positive, negative, vae, seed, steps, cfg, 
             sampler_name, scheduler, denoise, tile_width, tile_height, padding, 
             mask_blur, force_uniform_tiles, tiled_decode, multi_job_id="", is_worker=False, 
@@ -173,10 +169,7 @@ class UltimateSDUpscaleDistributed:
         enabled_workers = json.loads(enabled_worker_ids)
         num_workers = len(enabled_workers)
         
-        if batch_size == 1 or batch_size <= dynamic_threshold:
-            mode = "static"
-        else:
-            mode = "dynamic"
+        mode = self._determine_processing_mode(batch_size, num_workers, dynamic_threshold)
             
         debug_log(f"UltimateSDUpscale Worker - Mode: {mode}, batch_size: {batch_size}")
         
@@ -201,7 +194,7 @@ class UltimateSDUpscaleDistributed:
         total_tiles = batch_size * num_tiles_per_image
         
         # Get assigned global tile indices for this worker
-        assigned_global_indices = self._get_worker_global_indices(total_tiles, enabled_worker_ids, worker_id)
+        assigned_global_indices = self._get_worker_global_indices(total_tiles, enabled_workers, worker_id)
         if not assigned_global_indices:
             return (upscaled_image,)
         
@@ -209,6 +202,9 @@ class UltimateSDUpscaleDistributed:
         
         # Process tiles SYNCHRONOUSLY
         processed_tiles = []
+        # Track which batch indices we've already pre-sliced conditioning for
+        sliced_conditioning_cache = {}
+        
         for global_idx in assigned_global_indices:
             # Calculate which image and tile this corresponds to
             batch_idx = global_idx // num_tiles_per_image
@@ -218,6 +214,22 @@ class UltimateSDUpscaleDistributed:
             if batch_idx >= upscaled_image.shape[0]:
                 debug_log(f"Warning: Calculated batch_idx {batch_idx} exceeds batch size {upscaled_image.shape[0]}")
                 continue
+            
+            # Pre-slice conditioning once per image (cache it)
+            if batch_idx not in sliced_conditioning_cache:
+                positive_sliced = copy.deepcopy(positive)
+                negative_sliced = copy.deepcopy(negative)
+                for cond_list in [positive_sliced, negative_sliced]:
+                    for i in range(len(cond_list)):
+                        emb, cond_dict = cond_list[i]
+                        if emb.shape[0] > 1:
+                            cond_list[i][0] = emb[batch_idx:batch_idx+1]
+                        # Don't slice ControlNet - crop_cond will handle spatial cropping
+                        if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
+                            cond_dict['mask'] = cond_dict['mask'][batch_idx:batch_idx+1]
+                sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
+            else:
+                positive_sliced, negative_sliced = sliced_conditioning_cache[batch_idx]
                 
             x, y = all_tiles[tile_idx]
             
@@ -228,9 +240,10 @@ class UltimateSDUpscaleDistributed:
             
             # Process tile through SD with unique seed
             image_seed = seed + batch_idx * 1000
-            processed_tile = self.process_tile(tile_tensor, model, positive, negative, vae,
+            processed_tile = self.process_tile(tile_tensor, model, positive_sliced, negative_sliced, vae,
                                              image_seed + tile_idx, steps, cfg, sampler_name, 
-                                             scheduler, denoise, tiled_decode)
+                                             scheduler, denoise, tiled_decode, batch_idx=batch_idx,
+                                             region=(x1, y1, x1 + ew, y1 + eh), image_size=(width, height))
             
             processed_tiles.append({
                 'tile': processed_tile,
@@ -278,12 +291,7 @@ class UltimateSDUpscaleDistributed:
         num_workers = len(enabled_workers)
         
         # Determine processing mode
-        if num_workers == 0:
-            mode = "single_gpu"
-        elif batch_size == 1 or batch_size <= dynamic_threshold:
-            mode = "static"
-        else:
-            mode = "dynamic"
+        mode = self._determine_processing_mode(batch_size, num_workers, dynamic_threshold)
         
         debug_log(f"UltimateSDUpscale Master - Mode: {mode}, batch_size: {batch_size}, workers: {num_workers}")
         
@@ -315,10 +323,6 @@ class UltimateSDUpscaleDistributed:
             debug_log(f"UltimateSDUpscale Master - Queue initialization error: {e}")
             raise RuntimeError(f"Failed to initialize static mode queue: {e}")
         
-        # Don't try to prepare via API since we're using local queues
-        # loop = asyncio.new_event_loop()
-        # asyncio.set_event_loop(loop)
-        
         # Convert batch to PIL list for processing
         result_images = []
         for b in range(batch_size):
@@ -338,6 +342,9 @@ class UltimateSDUpscaleDistributed:
         debug_log(f"UltimateSDUpscale Master - Processing {master_tiles} tiles locally from batch of {batch_size}")
         
         # Process master tiles SYNCHRONOUSLY
+        # Track which batch indices we've already pre-sliced conditioning for
+        sliced_conditioning_cache = {}
+        
         for global_idx in master_global_indices:
             # Calculate which image and tile this corresponds to
             batch_idx = global_idx // num_tiles_per_image
@@ -347,15 +354,31 @@ class UltimateSDUpscaleDistributed:
             if batch_idx >= len(result_images):
                 debug_log(f"Warning: Calculated batch_idx {batch_idx} exceeds result_images length {len(result_images)}")
                 continue
+            
+            # Pre-slice conditioning once per image (cache it)
+            if batch_idx not in sliced_conditioning_cache:
+                positive_sliced = copy.deepcopy(positive)
+                negative_sliced = copy.deepcopy(negative)
+                for cond_list in [positive_sliced, negative_sliced]:
+                    for i in range(len(cond_list)):
+                        emb, cond_dict = cond_list[i]
+                        if emb.shape[0] > 1:
+                            cond_list[i][0] = emb[batch_idx:batch_idx+1]
+                        # Don't slice ControlNet - crop_cond will handle spatial cropping
+                        if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
+                            cond_dict['mask'] = cond_dict['mask'][batch_idx:batch_idx+1]
+                sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
+            else:
+                positive_sliced, negative_sliced = sliced_conditioning_cache[batch_idx]
                 
             # Use unique seed per image
             image_seed = seed + batch_idx * 1000
             
             result_images[batch_idx] = self._process_and_blend_tile(
                 tile_idx, all_tiles[tile_idx], upscaled_image[batch_idx:batch_idx+1], result_images[batch_idx],
-                model, positive, negative, vae, image_seed, steps, cfg,
+                model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
                 sampler_name, scheduler, denoise, tile_width, tile_height,
-                padding, mask_blur, width, height, tiled_decode
+                padding, mask_blur, width, height, tiled_decode, batch_idx=batch_idx
             )
         
         # Collect worker tiles using async
@@ -431,9 +454,8 @@ class UltimateSDUpscaleDistributed:
         debug_log(f"UltimateSDUpscale Master - Job {multi_job_id} complete")
         return (result_tensor,)
     
-    def _get_worker_global_indices(self, total_tiles, enabled_worker_ids, worker_id):
+    def _get_worker_global_indices(self, total_tiles, enabled_workers, worker_id):
         """Calculate which global tile indices are assigned to a specific worker in flattened mode."""
-        enabled_workers = json.loads(enabled_worker_ids)
         num_workers = len(enabled_workers)
         
         debug_log(f"UltimateSDUpscale Worker - Worker ID: {worker_id}, Enabled workers: {enabled_workers}")
@@ -444,71 +466,20 @@ class UltimateSDUpscaleDistributed:
             log(f"UltimateSDUpscale Worker - Worker {worker_id} not found in enabled list {enabled_workers}")
             return []
         
-        # Calculate tile distribution
-        tiles_per_participant = total_tiles // (num_workers + 1)
-        remainder = total_tiles % (num_workers + 1)
-        master_tiles = tiles_per_participant + (1 if remainder > 0 else 0)
-        
-        start_idx = master_tiles + (worker_index * tiles_per_participant)
-        if worker_index < remainder - 1:
-            start_idx += worker_index
-            end_idx = start_idx + tiles_per_participant + 1
-        else:
-            start_idx += remainder - 1 if remainder > 0 else 0
-            end_idx = start_idx + tiles_per_participant
-        
-        end_idx = min(end_idx, total_tiles)
-        return list(range(start_idx, end_idx))
-    
-    def _get_worker_tiles(self, all_tiles, enabled_worker_ids, worker_id):
-        """Calculate which tiles are assigned to a specific worker."""
-        enabled_workers = json.loads(enabled_worker_ids)
-        num_workers = len(enabled_workers)
-        total_tiles = len(all_tiles)
-        
-        debug_log(f"UltimateSDUpscale Worker - Worker ID: {worker_id}, Enabled workers: {enabled_workers}")
-        
-        try:
-            worker_index = enabled_workers.index(worker_id)
-        except ValueError:
-            log(f"UltimateSDUpscale Worker - Worker {worker_id} not found in enabled list {enabled_workers}")
-            return []
-        
-        # Calculate tile distribution
-        tiles_per_participant = total_tiles // (num_workers + 1)
-        remainder = total_tiles % (num_workers + 1)
-        master_tiles = tiles_per_participant + (1 if remainder > 0 else 0)
-        
-        start_idx = master_tiles + (worker_index * tiles_per_participant)
-        if worker_index < remainder - 1:
-            start_idx += worker_index
-            end_idx = start_idx + tiles_per_participant + 1
-        else:
-            start_idx += remainder - 1 if remainder > 0 else 0
-            end_idx = start_idx + tiles_per_participant
-        
-        end_idx = min(end_idx, total_tiles)
-        return list(range(start_idx, end_idx))
+        global_indices = list(range(total_tiles))
+        all_assignments = self._distribute_items(global_indices, num_workers + 1)
+        return all_assignments[worker_index + 1]  # +1 because 0 is master
     
     def _get_master_global_indices(self, total_tiles, num_workers):
         """Calculate which global tile indices are assigned to the master in flattened mode."""
-        tiles_per_participant = total_tiles // (num_workers + 1)
-        remainder = total_tiles % (num_workers + 1)
-        master_tiles = tiles_per_participant + (1 if remainder > 0 else 0)
-        return list(range(master_tiles))
-    
-    def _get_master_tiles(self, all_tiles, num_workers):
-        """Calculate which tiles are assigned to the master."""
-        total_tiles = len(all_tiles)
-        tiles_per_participant = total_tiles // (num_workers + 1)
-        remainder = total_tiles % (num_workers + 1)
-        master_tiles = tiles_per_participant + (1 if remainder > 0 else 0)
-        return list(range(master_tiles))
+        global_indices = list(range(total_tiles))
+        all_assignments = self._distribute_items(global_indices, num_workers + 1)
+        return all_assignments[0]
     
     def _process_and_blend_tile(self, tile_idx, tile_pos, upscaled_image, result_image,
                                model, positive, negative, vae, seed, steps, cfg,
                                sampler_name, scheduler, denoise, tile_width, tile_height,
-                               padding, mask_blur, image_width, image_height, tiled_decode):
+                               padding, mask_blur, image_width, image_height, tiled_decode, batch_idx: int = 0):
         """Process a single tile and blend it into the result image."""
         x, y = tile_pos
         
@@ -519,7 +490,8 @@ class UltimateSDUpscaleDistributed:
         
         processed_tile = self.process_tile(tile_tensor, model, positive, negative, vae,
                                          seed + tile_idx, steps, cfg, sampler_name, 
-                                         scheduler, denoise, tiled_decode)
+                                         scheduler, denoise, tiled_decode, batch_idx=batch_idx,
+                                         region=(x1, y1, x1 + ew, y1 + eh), image_size=(image_width, image_height))
         
         # Convert and blend
         processed_pil = tensor_to_pil(processed_tile, 0)
@@ -530,17 +502,6 @@ class UltimateSDUpscaleDistributed:
                                      x1, y1, (ew, eh), tile_mask, padding)
         
         return result_image
-    
-    async def _prepare_multigpu_job(self, multi_job_id):
-        """Prepare job via API endpoint to ensure server is ready."""
-        session = await get_client_session()
-        # Use the actual server port (get from server instance)
-        port = get_server_port()
-        async with session.post(f"http://localhost:{port}/distributed/prepare_job",
-                              json={"multi_job_id": multi_job_id}) as response:
-            if response.status != 200:
-                text = await response.text()
-                raise RuntimeError(f"Failed to prepare job: {response.status} - {text}")
     
     async def _init_job_queue_dynamic(self, multi_job_id, batch_size, assigned_to_workers=None, worker_status=None, all_indices=None):
         """Initialize the job queue for dynamic mode with pending images."""
@@ -864,9 +825,31 @@ class UltimateSDUpscaleDistributed:
         return tile_tensor, x1, y1, extracted_width, extracted_height
     
     def process_tile(self, tile_tensor: torch.Tensor, model, positive, negative, vae,
-                    seed: int, steps: int, cfg: float, sampler_name: str, 
-                    scheduler: str, denoise: float, tiled_decode: bool = False) -> torch.Tensor:
-        """Process a single tile through SD sampling."""
+                     seed: int, steps: int, cfg: float, sampler_name: str, 
+                     scheduler: str, denoise: float, tiled_decode: bool = False,
+                     batch_idx: int = 0, region: Tuple[int, int, int, int] = None,
+                     image_size: Tuple[int, int] = None) -> torch.Tensor:
+        """Process a single tile through SD sampling. 
+        Note: positive and negative should already be pre-sliced for the current batch_idx."""
+        debug_log(f"[process_tile] Processing tile for batch_idx={batch_idx}, seed={seed}, region={region}")
+        
+        # Log conditioning details
+        debug_log(f"[process_tile] Positive conditioning items: {len(positive)}")
+        debug_log(f"[process_tile] Negative conditioning items: {len(negative)}")
+        
+        # Check for ControlNet in conditioning
+        for i, (emb, cond_dict) in enumerate(positive):
+            if 'control' in cond_dict:
+                control = cond_dict['control']
+                debug_log(f"[process_tile] Found ControlNet in positive[{i}]")
+                debug_log(f"[process_tile] Control id: {id(control)}")
+                if hasattr(control, 'control_model'):
+                    debug_log(f"[process_tile] control_model id: {id(control.control_model)}")
+                if hasattr(control, 'cond_hint_original'):
+                    debug_log(f"[process_tile] cond_hint_original shape: {control.cond_hint_original.shape}")
+                    debug_log(f"[process_tile] Expected to use hint at index {batch_idx} from batch")
+                debug_log(f"[process_tile] Embedding shape: {emb.shape}")
+        
         # Import here to avoid circular dependencies
         from nodes import common_ksampler, VAEEncode, VAEDecode
         
@@ -887,15 +870,38 @@ class UltimateSDUpscaleDistributed:
         if tile_tensor.is_cuda:
             clean_tensor = clean_tensor.cuda()
         
+        # Crop conditioning to tile region if provided (assumes hints at image resolution)
+        if region is not None and image_size is not None:
+            positive_cropped = copy.deepcopy(positive)
+            negative_cropped = copy.deepcopy(negative)
+            init_size = image_size  # (width, height) of full image
+            canvas_size = image_size
+            tile_size = (tile_tensor.shape[2], tile_tensor.shape[1])  # (width, height)
+            w_pad = 0  # No extra pad needed; region already includes padding
+            h_pad = 0
+            positive_cropped = crop_cond(positive_cropped, region, init_size, canvas_size, tile_size, w_pad, h_pad)
+            negative_cropped = crop_cond(negative_cropped, region, init_size, canvas_size, tile_size, w_pad, h_pad)
+        else:
+            # No region cropping needed, use conditioning as-is
+            positive_cropped = positive
+            negative_cropped = negative
+        
         # Encode to latent
         if tiled_decode and tiled_vae_available:
             latent = VAEEncodeTiled().encode(vae, clean_tensor)[0]
         else:
             latent = VAEEncode().encode(vae, clean_tensor)[0]
         
+        # Log latent shape
+        if 'samples' in latent:
+            debug_log(f"[process_tile] Latent shape: {latent['samples'].shape}")
+        
         # Sample
+        debug_log(f"[process_tile] About to call common_ksampler with batch_idx={batch_idx}")
+        debug_log(f"[process_tile] Model id: {id(model)}")
         samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, 
-                                positive, negative, latent, denoise=denoise)[0]
+                                positive_cropped, negative_cropped, latent, denoise=denoise)[0]
+        debug_log(f"[process_tile] common_ksampler completed")
         
         # Decode back to image
         if tiled_decode and tiled_vae_available:
@@ -928,7 +934,7 @@ class UltimateSDUpscaleDistributed:
     
     def blend_tile(self, base_image: Image.Image, tile_image: Image.Image,
                   x: int, y: int, extracted_size: Tuple[int, int], 
-                  mask: int, padding: int) -> Image.Image:
+                  mask: Image.Image, padding: int) -> Image.Image:
         """Blend a processed tile back into the base image using Ultimate SD Upscale's exact approach.
         
         This follows the exact method from ComfyUI_UltimateSDUpscale/modules/processing.py
@@ -1083,15 +1089,28 @@ class UltimateSDUpscaleDistributed:
         
         # Process each image in the batch
         for batch_idx in range(batch_size):
-            # Process each tile for this image
+            debug_log(f"[process_single_gpu] Processing batch_idx {batch_idx}")
+            # Pre-slice conditioning once per image (not per tile)
+            positive_sliced = copy.deepcopy(positive)
+            negative_sliced = copy.deepcopy(negative)
+            for cond_list in [positive_sliced, negative_sliced]:
+                for i in range(len(cond_list)):
+                    emb, cond_dict = cond_list[i]
+                    if emb.shape[0] > 1:
+                        cond_list[i][0] = emb[batch_idx:batch_idx+1]
+                    # Don't slice ControlNet - crop_cond will handle spatial cropping
+                    if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
+                        cond_dict['mask'] = cond_dict['mask'][batch_idx:batch_idx+1]
+            
+            # Process each tile for this image with pre-sliced conditioning
             for tile_idx, tile_pos in enumerate(all_tiles):
                 # Use unique seed per image
                 image_seed = seed + batch_idx * 1000
                 result_images[batch_idx] = self._process_and_blend_tile(
                     tile_idx, tile_pos, upscaled_image[batch_idx:batch_idx+1], result_images[batch_idx],
-                    model, positive, negative, vae, image_seed, steps, cfg,
+                    model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
                     sampler_name, scheduler, denoise, tile_width, tile_height,
-                    padding, mask_blur, width, height, tiled_decode
+                    padding, mask_blur, width, height, tiled_decode, batch_idx=batch_idx
                 )
         
         # Convert back to tensor
@@ -1160,25 +1179,30 @@ class UltimateSDUpscaleDistributed:
                 consecutive_retries = 0
                 debug_log(f"Master processing image {image_idx} dynamically")
                 processed_count += 1
-                
-                # Get total completed count for accurate progress
-                total_completed = run_async_in_server_loop(
-                    self._get_total_completed_count(multi_job_id),
-                    timeout=1.0
-                )
-                log(f"{total_completed}/{batch_size} completed images")
 
                 # Process locally
                 single_tensor = upscaled_image[image_idx:image_idx+1]
                 local_image = result_images[image_idx]
                 image_seed = seed + image_idx * 1000
                 
+                # Pre-slice conditioning once per image (not per tile)
+                positive_sliced = copy.deepcopy(positive)
+                negative_sliced = copy.deepcopy(negative)
+                for cond_list in [positive_sliced, negative_sliced]:
+                    for i in range(len(cond_list)):
+                        emb, cond_dict = cond_list[i]
+                        if emb.shape[0] > 1:
+                            cond_list[i][0] = emb[image_idx:image_idx+1]
+                        # Don't slice ControlNet - crop_cond will handle spatial cropping
+                        if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
+                            cond_dict['mask'] = cond_dict['mask'][image_idx:image_idx+1]
+                
                 for tile_idx, pos in enumerate(all_tiles):
                     local_image = self._process_and_blend_tile(
                         tile_idx, pos, single_tensor, local_image,
-                        model, positive, negative, vae, image_seed, steps, cfg,
+                        model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
                         sampler_name, scheduler, denoise, tile_width, tile_height,
-                        padding, mask_blur, width, height, tiled_decode
+                        padding, mask_blur, width, height, tiled_decode, batch_idx=image_idx
                     )
                 
                 result_images[image_idx] = local_image
@@ -1194,6 +1218,16 @@ class UltimateSDUpscaleDistributed:
                     self._drain_worker_results_queue(multi_job_id),
                     timeout=5.0
                 )
+                
+                # Check for timed out workers and requeue their images
+                requeued_count = run_async_in_server_loop(
+                    self._check_and_requeue_timed_out_workers(multi_job_id, batch_size),
+                    timeout=5.0
+                )
+                if requeued_count > 0:
+                    log(f"Requeued {requeued_count} images from timed out workers")
+                    consecutive_retries = 0  # Reset since we have work to do
+                    continue
 
                 # Now check total completed (includes newly collected)
                 completed_now = run_async_in_server_loop(
@@ -1201,15 +1235,23 @@ class UltimateSDUpscaleDistributed:
                     timeout=1.0
                 )
                 
-                # Show accurate progress if we drained any new results
-                if drained_count > 0:
-                    log(f"{completed_now}/{batch_size} completed images")
                 
                 debug_log(f"Queue empty, completed count: {completed_now}/{batch_size}")
 
                 if completed_now >= batch_size:
                     debug_log("All images completed, exiting master loop")
                     break
+
+                # Check if there are pending images in the queue (could be requeued)
+                pending_count = run_async_in_server_loop(
+                    self._get_pending_count(multi_job_id),
+                    timeout=1.0
+                )
+                
+                if pending_count > 0:
+                    debug_log(f"Found {pending_count} pending images (possibly requeued), continuing to process")
+                    consecutive_retries = 0  # Reset retries since there's work to do
+                    continue
 
                 consecutive_retries += 1
                 if consecutive_retries >= max_consecutive_retries:
@@ -1298,6 +1340,15 @@ class UltimateSDUpscaleDistributed:
                 return job_data['completed_images'].copy()
             return {}
     
+    async def _get_pending_count(self, multi_job_id):
+        """Get count of pending images in the queue."""
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if job_data and 'pending_images' in job_data:
+                return job_data['pending_images'].qsize()
+            return 0
+    
     async def _drain_worker_results_queue(self, multi_job_id):
         """Drain pending worker results from queue and update completed_images. Returns count of drained images."""
         prompt_server = ensure_tile_jobs_initialized()
@@ -1333,6 +1384,36 @@ class UltimateSDUpscaleDistributed:
                 debug_log(f"Drained {collected} worker images during retry")
             
             return collected
+    
+    async def _check_and_requeue_timed_out_workers(self, multi_job_id, batch_size):
+        """Check for timed out workers and requeue their assigned images. Returns count of requeued images."""
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if not job_data:
+                return 0
+                
+            current_time = time.time()
+            requeued_count = 0
+            completed_images = job_data.get('completed_images', {})
+            
+            # Check for timed out workers (60 second timeout)
+            for worker, last_heartbeat in list(job_data.get('worker_status', {}).items()):
+                if current_time - last_heartbeat > 60:
+                    log(f"Worker {worker} timed out")
+                    # Requeue assigned images from this worker
+                    for idx in job_data.get('assigned_to_workers', {}).get(worker, []):
+                        if idx not in completed_images:
+                            await job_data['pending_images'].put(idx)
+                            requeued_count += 1
+                            debug_log(f"Requeued image {idx} from timed out worker {worker}")
+                    # Clean up worker tracking
+                    if 'worker_status' in job_data:
+                        del job_data['worker_status'][worker]
+                    if 'assigned_to_workers' in job_data:
+                        job_data['assigned_to_workers'][worker] = []
+            
+            return requeued_count
     
     
     def process_worker_dynamic(self, upscaled_image, model, positive, negative, vae,
@@ -1395,12 +1476,25 @@ class UltimateSDUpscaleDistributed:
                 
                 # Process all tiles for this image
                 image_seed = seed + image_idx * 1000
+                
+                # Pre-slice conditioning once per image (not per tile)
+                positive_sliced = copy.deepcopy(positive)
+                negative_sliced = copy.deepcopy(negative)
+                for cond_list in [positive_sliced, negative_sliced]:
+                    for i in range(len(cond_list)):
+                        emb, cond_dict = cond_list[i]
+                        if emb.shape[0] > 1:
+                            cond_list[i][0] = emb[image_idx:image_idx+1]
+                        # Don't slice ControlNet - crop_cond will handle spatial cropping
+                        if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
+                            cond_dict['mask'] = cond_dict['mask'][image_idx:image_idx+1]
+                
                 for tile_idx, pos in enumerate(all_tiles):
                     local_image = self._process_and_blend_tile(
                         tile_idx, pos, single_tensor, local_image,
-                        model, positive, negative, vae, image_seed, steps, cfg,
+                        model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
                         sampler_name, scheduler, denoise, tile_width, tile_height,
-                        padding, mask_blur, width, height, tiled_decode
+                        padding, mask_blur, width, height, tiled_decode, batch_idx=image_idx
                     )
                 
                 # Send processed image back to master
@@ -1566,6 +1660,31 @@ class UltimateSDUpscaleDistributed:
             response.raise_for_status()
             debug_log(f"Worker {worker_id} sent completion signal")
 
+    def _determine_processing_mode(self, batch_size: int, num_workers: int, dynamic_threshold: int) -> str:
+        """Determines the processing mode based on batch size and worker count."""
+        if num_workers == 0:
+            return "single_gpu"
+        if batch_size <= dynamic_threshold:
+            return "static"
+        return "dynamic"
+
+    def _distribute_items(self, items: list, num_participants: int) -> List[List[any]]:
+        """Distributes a list of items among N participants."""
+        if num_participants == 0:
+            return [items] # All items for the single participant (master)
+
+        items_per_participant = len(items) // num_participants
+        remainder = len(items) % num_participants
+        
+        assignments = []
+        start_idx = 0
+        for i in range(num_participants):
+            count = items_per_participant + (1 if i < remainder else 0)
+            end_idx = start_idx + count
+            assignments.append(items[start_idx:end_idx])
+            start_idx = end_idx
+        
+        return assignments
 
 # Ensure initialization before registering routes
 ensure_tile_jobs_initialized()
