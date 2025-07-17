@@ -129,7 +129,6 @@ class UltimateSDUpscaleDistributed:
         """Force re-execution."""
         return float("nan")  # Always re-execute
     
-    
     def run(self, upscaled_image, model, positive, negative, vae, seed, steps, cfg, 
             sampler_name, scheduler, denoise, tile_width, tile_height, padding, 
             mask_blur, force_uniform_tiles, tiled_decode, multi_job_id="", is_worker=False, 
@@ -224,7 +223,13 @@ class UltimateSDUpscaleDistributed:
                         emb, cond_dict = cond_list[i]
                         if emb.shape[0] > 1:
                             cond_list[i][0] = emb[batch_idx:batch_idx+1]
-                        # Don't slice ControlNet - crop_cond will handle spatial cropping
+                        if 'control' in cond_dict:
+                            control = cond_dict['control']
+                            while control is not None:
+                                hint = control.cond_hint_original
+                                if hint.shape[0] > 1:
+                                    control.cond_hint_original = hint[batch_idx:batch_idx+1]
+                                control = control.previous_controlnet
                         if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
                             cond_dict['mask'] = cond_dict['mask'][batch_idx:batch_idx+1]
                 sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
@@ -364,7 +369,13 @@ class UltimateSDUpscaleDistributed:
                         emb, cond_dict = cond_list[i]
                         if emb.shape[0] > 1:
                             cond_list[i][0] = emb[batch_idx:batch_idx+1]
-                        # Don't slice ControlNet - crop_cond will handle spatial cropping
+                        if 'control' in cond_dict:
+                            control = cond_dict['control']
+                            while control is not None:
+                                hint = control.cond_hint_original
+                                if hint.shape[0] > 1:
+                                    control.cond_hint_original = hint[batch_idx:batch_idx+1]
+                                control = control.previous_controlnet
                         if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
                             cond_dict['mask'] = cond_dict['mask'][batch_idx:batch_idx+1]
                 sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
@@ -831,25 +842,6 @@ class UltimateSDUpscaleDistributed:
                      image_size: Tuple[int, int] = None) -> torch.Tensor:
         """Process a single tile through SD sampling. 
         Note: positive and negative should already be pre-sliced for the current batch_idx."""
-        debug_log(f"[process_tile] Processing tile for batch_idx={batch_idx}, seed={seed}, region={region}")
-        
-        # Log conditioning details
-        debug_log(f"[process_tile] Positive conditioning items: {len(positive)}")
-        debug_log(f"[process_tile] Negative conditioning items: {len(negative)}")
-        
-        # Check for ControlNet in conditioning
-        for i, (emb, cond_dict) in enumerate(positive):
-            if 'control' in cond_dict:
-                control = cond_dict['control']
-                debug_log(f"[process_tile] Found ControlNet in positive[{i}]")
-                debug_log(f"[process_tile] Control id: {id(control)}")
-                if hasattr(control, 'control_model'):
-                    debug_log(f"[process_tile] control_model id: {id(control.control_model)}")
-                if hasattr(control, 'cond_hint_original'):
-                    debug_log(f"[process_tile] cond_hint_original shape: {control.cond_hint_original.shape}")
-                    debug_log(f"[process_tile] Expected to use hint at index {batch_idx} from batch")
-                debug_log(f"[process_tile] Embedding shape: {emb.shape}")
-        
         # Import here to avoid circular dependencies
         from nodes import common_ksampler, VAEEncode, VAEDecode
         
@@ -892,16 +884,9 @@ class UltimateSDUpscaleDistributed:
         else:
             latent = VAEEncode().encode(vae, clean_tensor)[0]
         
-        # Log latent shape
-        if 'samples' in latent:
-            debug_log(f"[process_tile] Latent shape: {latent['samples'].shape}")
-        
         # Sample
-        debug_log(f"[process_tile] About to call common_ksampler with batch_idx={batch_idx}")
-        debug_log(f"[process_tile] Model id: {id(model)}")
         samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, 
                                 positive_cropped, negative_cropped, latent, denoise=denoise)[0]
-        debug_log(f"[process_tile] common_ksampler completed")
         
         # Decode back to image
         if tiled_decode and tiled_vae_available:
@@ -1089,7 +1074,6 @@ class UltimateSDUpscaleDistributed:
         
         # Process each image in the batch
         for batch_idx in range(batch_size):
-            debug_log(f"[process_single_gpu] Processing batch_idx {batch_idx}")
             # Pre-slice conditioning once per image (not per tile)
             positive_sliced = copy.deepcopy(positive)
             negative_sliced = copy.deepcopy(negative)
@@ -1098,7 +1082,13 @@ class UltimateSDUpscaleDistributed:
                     emb, cond_dict = cond_list[i]
                     if emb.shape[0] > 1:
                         cond_list[i][0] = emb[batch_idx:batch_idx+1]
-                    # Don't slice ControlNet - crop_cond will handle spatial cropping
+                    if 'control' in cond_dict:
+                        control = cond_dict['control']
+                        while control is not None:
+                            hint = control.cond_hint_original
+                            if hint.shape[0] > 1:
+                                control.cond_hint_original = hint[batch_idx:batch_idx+1]
+                            control = control.previous_controlnet
                     if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
                         cond_dict['mask'] = cond_dict['mask'][batch_idx:batch_idx+1]
             
@@ -1193,7 +1183,13 @@ class UltimateSDUpscaleDistributed:
                         emb, cond_dict = cond_list[i]
                         if emb.shape[0] > 1:
                             cond_list[i][0] = emb[image_idx:image_idx+1]
-                        # Don't slice ControlNet - crop_cond will handle spatial cropping
+                        if 'control' in cond_dict:
+                            control = cond_dict['control']
+                            while control is not None:
+                                hint = control.cond_hint_original
+                                if hint.shape[0] > 1:
+                                    control.cond_hint_original = hint[image_idx:image_idx+1]
+                                control = control.previous_controlnet
                         if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
                             cond_dict['mask'] = cond_dict['mask'][image_idx:image_idx+1]
                 
@@ -1485,7 +1481,13 @@ class UltimateSDUpscaleDistributed:
                         emb, cond_dict = cond_list[i]
                         if emb.shape[0] > 1:
                             cond_list[i][0] = emb[image_idx:image_idx+1]
-                        # Don't slice ControlNet - crop_cond will handle spatial cropping
+                        if 'control' in cond_dict:
+                            control = cond_dict['control']
+                            while control is not None:
+                                hint = control.cond_hint_original
+                                if hint.shape[0] > 1:
+                                    control.cond_hint_original = hint[image_idx:image_idx+1]
+                                control = control.previous_controlnet
                         if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
                             cond_dict['mask'] = cond_dict['mask'][image_idx:image_idx+1]
                 
