@@ -39,6 +39,36 @@ MAX_BATCH = int(os.environ.get('COMFYUI_MAX_BATCH', '20'))
 # Configure maximum payload size (50MB default, configurable via environment variable)
 MAX_PAYLOAD_SIZE = int(os.environ.get('COMFYUI_MAX_PAYLOAD_SIZE', str(50 * 1024 * 1024)))
 
+# Helper functions for shallow copying conditioning without duplicating models
+def clone_control_chain(control, clone_hint=True):
+    """Shallow copy the ControlNet chain, optionally cloning hints but sharing models."""
+    if control is None:
+        return None
+    new_control = copy.copy(control)  # Shallow copy (shares model)
+    if clone_hint and hasattr(control, 'cond_hint_original'):
+        new_control.cond_hint_original = control.cond_hint_original.clone()
+    if hasattr(control, 'previous_controlnet'):
+        new_control.previous_controlnet = clone_control_chain(control.previous_controlnet, clone_hint)
+    return new_control
+
+def clone_conditioning(cond_list, clone_hints=True):
+    """Clone conditioning without duplicating ControlNet models."""
+    new_cond = []
+    for emb, cond_dict in cond_list:
+        new_emb = emb.clone() if emb is not None else None
+        new_dict = cond_dict.copy()
+        if 'control' in new_dict:
+            new_dict['control'] = clone_control_chain(new_dict['control'], clone_hints)
+        if 'mask' in new_dict:
+            new_dict['mask'] = new_dict['mask'].clone()
+        # Handle other potential fields if needed
+        if 'pooled_output' in new_dict:
+            new_dict['pooled_output'] = new_dict['pooled_output'].clone()
+        if 'area' in new_dict:
+            new_dict['area'] = new_dict['area'][:]  # Shallow copy list/tuple
+        new_cond.append([new_emb, new_dict])
+    return new_cond
+
 # Helper function to ensure persistent state is initialized
 def ensure_tile_jobs_initialized():
     """Ensure tile job storage is initialized on the server instance."""
@@ -129,6 +159,7 @@ class UltimateSDUpscaleDistributed:
         """Force re-execution."""
         return float("nan")  # Always re-execute
     
+    
     def run(self, upscaled_image, model, positive, negative, vae, seed, steps, cfg, 
             sampler_name, scheduler, denoise, tile_width, tile_height, padding, 
             mask_blur, force_uniform_tiles, tiled_decode, multi_job_id="", is_worker=False, 
@@ -216,8 +247,8 @@ class UltimateSDUpscaleDistributed:
             
             # Pre-slice conditioning once per image (cache it)
             if batch_idx not in sliced_conditioning_cache:
-                positive_sliced = copy.deepcopy(positive)
-                negative_sliced = copy.deepcopy(negative)
+                positive_sliced = clone_conditioning(positive)
+                negative_sliced = clone_conditioning(negative)
                 for cond_list in [positive_sliced, negative_sliced]:
                     for i in range(len(cond_list)):
                         emb, cond_dict = cond_list[i]
@@ -362,8 +393,8 @@ class UltimateSDUpscaleDistributed:
             
             # Pre-slice conditioning once per image (cache it)
             if batch_idx not in sliced_conditioning_cache:
-                positive_sliced = copy.deepcopy(positive)
-                negative_sliced = copy.deepcopy(negative)
+                positive_sliced = clone_conditioning(positive)
+                negative_sliced = clone_conditioning(negative)
                 for cond_list in [positive_sliced, negative_sliced]:
                     for i in range(len(cond_list)):
                         emb, cond_dict = cond_list[i]
@@ -842,6 +873,25 @@ class UltimateSDUpscaleDistributed:
                      image_size: Tuple[int, int] = None) -> torch.Tensor:
         """Process a single tile through SD sampling. 
         Note: positive and negative should already be pre-sliced for the current batch_idx."""
+        debug_log(f"[process_tile] Processing tile for batch_idx={batch_idx}, seed={seed}, region={region}")
+        
+        # Log conditioning details
+        debug_log(f"[process_tile] Positive conditioning items: {len(positive)}")
+        debug_log(f"[process_tile] Negative conditioning items: {len(negative)}")
+        
+        # Check for ControlNet in conditioning
+        for i, (emb, cond_dict) in enumerate(positive):
+            if 'control' in cond_dict:
+                control = cond_dict['control']
+                debug_log(f"[process_tile] Found ControlNet in positive[{i}]")
+                debug_log(f"[process_tile] Control id: {id(control)}")
+                if hasattr(control, 'control_model'):
+                    debug_log(f"[process_tile] control_model id: {id(control.control_model)}")
+                if hasattr(control, 'cond_hint_original'):
+                    debug_log(f"[process_tile] cond_hint_original shape: {control.cond_hint_original.shape}")
+                    debug_log(f"[process_tile] Expected to use hint at index {batch_idx} from batch")
+                debug_log(f"[process_tile] Embedding shape: {emb.shape}")
+        
         # Import here to avoid circular dependencies
         from nodes import common_ksampler, VAEEncode, VAEDecode
         
@@ -862,21 +912,23 @@ class UltimateSDUpscaleDistributed:
         if tile_tensor.is_cuda:
             clean_tensor = clean_tensor.cuda()
         
+        # Clone conditioning per tile (shares models, clones hints for cropping)
+        positive_tile = clone_conditioning(positive, clone_hints=True)
+        negative_tile = clone_conditioning(negative, clone_hints=True)
+        
         # Crop conditioning to tile region if provided (assumes hints at image resolution)
         if region is not None and image_size is not None:
-            positive_cropped = copy.deepcopy(positive)
-            negative_cropped = copy.deepcopy(negative)
             init_size = image_size  # (width, height) of full image
             canvas_size = image_size
             tile_size = (tile_tensor.shape[2], tile_tensor.shape[1])  # (width, height)
             w_pad = 0  # No extra pad needed; region already includes padding
             h_pad = 0
-            positive_cropped = crop_cond(positive_cropped, region, init_size, canvas_size, tile_size, w_pad, h_pad)
-            negative_cropped = crop_cond(negative_cropped, region, init_size, canvas_size, tile_size, w_pad, h_pad)
+            positive_cropped = crop_cond(positive_tile, region, init_size, canvas_size, tile_size, w_pad, h_pad)
+            negative_cropped = crop_cond(negative_tile, region, init_size, canvas_size, tile_size, w_pad, h_pad)
         else:
-            # No region cropping needed, use conditioning as-is
-            positive_cropped = positive
-            negative_cropped = negative
+            # No region cropping needed, use cloned conditioning as-is
+            positive_cropped = positive_tile
+            negative_cropped = negative_tile
         
         # Encode to latent
         if tiled_decode and tiled_vae_available:
@@ -884,9 +936,16 @@ class UltimateSDUpscaleDistributed:
         else:
             latent = VAEEncode().encode(vae, clean_tensor)[0]
         
+        # Log latent shape
+        if 'samples' in latent:
+            debug_log(f"[process_tile] Latent shape: {latent['samples'].shape}")
+        
         # Sample
+        debug_log(f"[process_tile] About to call common_ksampler with batch_idx={batch_idx}")
+        debug_log(f"[process_tile] Model id: {id(model)}")
         samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, 
                                 positive_cropped, negative_cropped, latent, denoise=denoise)[0]
+        debug_log(f"[process_tile] common_ksampler completed")
         
         # Decode back to image
         if tiled_decode and tiled_vae_available:
@@ -1074,9 +1133,10 @@ class UltimateSDUpscaleDistributed:
         
         # Process each image in the batch
         for batch_idx in range(batch_size):
+            debug_log(f"[process_single_gpu] Processing batch_idx {batch_idx}")
             # Pre-slice conditioning once per image (not per tile)
-            positive_sliced = copy.deepcopy(positive)
-            negative_sliced = copy.deepcopy(negative)
+            positive_sliced = clone_conditioning(positive)
+            negative_sliced = clone_conditioning(negative)
             for cond_list in [positive_sliced, negative_sliced]:
                 for i in range(len(cond_list)):
                     emb, cond_dict = cond_list[i]
@@ -1176,8 +1236,8 @@ class UltimateSDUpscaleDistributed:
                 image_seed = seed + image_idx * 1000
                 
                 # Pre-slice conditioning once per image (not per tile)
-                positive_sliced = copy.deepcopy(positive)
-                negative_sliced = copy.deepcopy(negative)
+                positive_sliced = clone_conditioning(positive)
+                negative_sliced = clone_conditioning(negative)
                 for cond_list in [positive_sliced, negative_sliced]:
                     for i in range(len(cond_list)):
                         emb, cond_dict = cond_list[i]
@@ -1474,8 +1534,8 @@ class UltimateSDUpscaleDistributed:
                 image_seed = seed + image_idx * 1000
                 
                 # Pre-slice conditioning once per image (not per tile)
-                positive_sliced = copy.deepcopy(positive)
-                negative_sliced = copy.deepcopy(negative)
+                positive_sliced = clone_conditioning(positive)
+                negative_sliced = clone_conditioning(negative)
                 for cond_list in [positive_sliced, negative_sliced]:
                     for i in range(len(cond_list)):
                         emb, cond_dict = cond_list[i]
