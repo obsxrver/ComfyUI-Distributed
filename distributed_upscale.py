@@ -542,7 +542,7 @@ class UltimateSDUpscaleDistributed:
                 text = await response.text()
                 raise RuntimeError(f"Failed to prepare job: {response.status} - {text}")
     
-    async def _init_job_queue_dynamic(self, multi_job_id, batch_size, assigned_to_workers=None, worker_status=None, worker_indices=None):
+    async def _init_job_queue_dynamic(self, multi_job_id, batch_size, assigned_to_workers=None, worker_status=None, all_indices=None):
         """Initialize the job queue for dynamic mode with pending images."""
         prompt_server = ensure_tile_jobs_initialized()
         async with prompt_server.distributed_tile_jobs_lock:
@@ -557,11 +557,11 @@ class UltimateSDUpscaleDistributed:
                     'assigned_to_workers': assigned_to_workers or {},
                     'worker_status': worker_status or {}
                 }
-                # Initialize pending images queue with worker indices only
+                # Initialize pending images queue with all indices
                 pending_images = prompt_server.distributed_pending_tile_jobs[multi_job_id]['pending_images']
-                for i in worker_indices:
+                for i in all_indices:
                     await pending_images.put(i)
-                debug_log(f"UltimateSDUpscale Master Dynamic - Initialized job queue with {len(worker_indices)} pending images for workers")
+                debug_log(f"UltimateSDUpscale Master Dynamic - Initialized job queue with {len(all_indices)} pending images for all participants")
             else:
                 debug_log(f"UltimateSDUpscale Master Dynamic - Queue already exists for {multi_job_id}")
     
@@ -666,11 +666,16 @@ class UltimateSDUpscaleDistributed:
         
         return collected_tiles
     
-    async def _async_process_dynamic(self, multi_job_id, expected_from_workers, num_workers):
-        """Async helper for dynamic mode - collect processed whole images from workers.
-        
-        This method implements dynamic load balancing where workers request images
-        as they become available, ensuring optimal utilization of GPU resources."""
+    async def _mark_image_completed(self, multi_job_id, image_idx, image_pil):
+        """Mark an image as completed in the job data."""
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if job_data and 'completed_images' in job_data:
+                job_data['completed_images'][image_idx] = image_pil
+
+    async def _async_collect_dynamic_images(self, multi_job_id, expected_from_workers, num_workers):
+        """Collect processed images from workers only."""
         prompt_server = ensure_tile_jobs_initialized()
         async with prompt_server.distributed_tile_jobs_lock:
             if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
@@ -684,13 +689,13 @@ class UltimateSDUpscaleDistributed:
             completed_images = job_data['completed_images']
         
         workers_done = set()
+        collected_count = 0
         timeout = TILE_WAIT_TIMEOUT * 2  # Longer timeout for full images
+        last_heartbeat_check = time.time()
         
         debug_log(f"UltimateSDUpscale Master Dynamic - Waiting for {expected_from_workers} images from {num_workers} workers")
         
-        last_heartbeat_check = time.time()
-        
-        while len(completed_images) < expected_from_workers and len(workers_done) < num_workers:
+        while collected_count < expected_from_workers and len(workers_done) < num_workers:
             try:
                 result = await asyncio.wait_for(q.get(), timeout=10.0)  # Shorter timeout for regular checks
                 worker_id = result['worker_id']
@@ -700,6 +705,7 @@ class UltimateSDUpscaleDistributed:
                     image_idx = result['image_idx']
                     image_pil = result['image']
                     completed_images[image_idx] = image_pil
+                    collected_count += 1
                     debug_log(f"UltimateSDUpscale Master Dynamic - Received image {image_idx} from worker {worker_id}")
                 
                 if is_last:
@@ -707,7 +713,7 @@ class UltimateSDUpscaleDistributed:
                     debug_log(f"UltimateSDUpscale Master Dynamic - Worker {worker_id} completed")
                     
             except asyncio.TimeoutError:
-                # Check for worker timeouts every 10 seconds
+                # Check for worker timeouts
                 current_time = time.time()
                 if current_time - last_heartbeat_check >= 10.0:
                     async with prompt_server.distributed_tile_jobs_lock:
@@ -717,33 +723,17 @@ class UltimateSDUpscaleDistributed:
                             for worker, last_heartbeat in list(job_data_check.get('worker_status', {}).items()):
                                 if current_time - last_heartbeat > 60:
                                     log(f"UltimateSDUpscale Master Dynamic - Worker {worker} timed out")
-                                    # Requeue assigned images from this worker
-                                    for idx in job_data_check.get('assigned_to_workers', {}).get(worker, []):
-                                        if idx not in completed_images:
-                                            await job_data_check['pending_images'].put(idx)
-                                            debug_log(f"UltimateSDUpscale Master Dynamic - Requeued image {idx} from timed out worker {worker}")
-                                    # Mark worker as done and clean up
                                     workers_done.add(worker)
                                     if 'worker_status' in job_data_check:
                                         del job_data_check['worker_status'][worker]
-                                    if 'assigned_to_workers' in job_data_check:
-                                        job_data_check['assigned_to_workers'][worker] = []
                     last_heartbeat_check = current_time
                 
                 # Check if we've been waiting too long overall
                 if current_time - last_heartbeat_check > timeout:
                     log(f"UltimateSDUpscale Master Dynamic - Overall timeout waiting for images")
-                    # Requeue all unfinished images
-                    async with prompt_server.distributed_tile_jobs_lock:
-                        if multi_job_id in prompt_server.distributed_pending_tile_jobs:
-                            pending_queue = prompt_server.distributed_pending_tile_jobs[multi_job_id]['pending_images']
-                            for idx in range(job_data_check.get('batch_size', 0)):
-                                if idx not in completed_images:
-                                    await pending_queue.put(idx)
-                                    debug_log(f"UltimateSDUpscale Master Dynamic - Requeued image {idx}")
                     break
         
-        debug_log(f"UltimateSDUpscale Master Dynamic - Collection complete. Got {len(completed_images)} images")
+        debug_log(f"UltimateSDUpscale Master Dynamic - Collection complete. Got {collected_count} images from workers")
         
         # Clean up job queue
         async with prompt_server.distributed_tile_jobs_lock:
@@ -1104,83 +1094,60 @@ class UltimateSDUpscaleDistributed:
                               seed, steps, cfg, sampler_name, scheduler, denoise,
                               tile_width, tile_height, padding, mask_blur,
                               force_uniform_tiles, tiled_decode, multi_job_id, enabled_workers):
-        """Dynamic mode for large batches - assigns whole images to workers dynamically."""
+        """Dynamic mode for large batches - assigns whole images to workers dynamically, including master."""
         # Get batch size and dimensions
         batch_size, height, width, _ = upscaled_image.shape
         num_workers = len(enabled_workers)
         
         debug_log(f"UltimateSDUpscale Master Dynamic - Processing batch of {batch_size} images with {num_workers} workers")
         
-        # Calculate master's share similar to static mode
-        num_participants = num_workers + 1
-        images_per_participant = batch_size // num_participants
-        remainder = batch_size % num_participants
-        master_images_count = images_per_participant + (1 if remainder > 0 else 0)
-        master_indices = list(range(master_images_count))
-        worker_indices = list(range(master_images_count, batch_size))
-        expected_from_workers = len(worker_indices)
+        # No fixed share - all images are dynamic
+        all_indices = list(range(batch_size))
+        
+        log(f"Processing {batch_size} images dynamically across master + {num_workers} workers.")
         
         # Calculate tiles for processing
         all_tiles = self.calculate_tiles(width, height, tile_width, tile_height, force_uniform_tiles)
         
-        # Initialize job queue for communication - synchronous approach
+        # Initialize job queue for communication
         try:
-            # Add worker tracking data
             assigned_to_workers = {w: [] for w in enabled_workers}
             worker_status = {w: time.time() for w in enabled_workers}
             
-            # Use short timeout for async init, with threading fallback
-            try:
-                run_async_in_server_loop(
-                    self._init_job_queue_dynamic(multi_job_id, batch_size, assigned_to_workers, worker_status, worker_indices),
-                    timeout=2.0  # Short timeout
-                )
-            except Exception as init_error:
-                debug_log(f"UltimateSDUpscale Master Dynamic - Async init failed, using threading: {init_error}")
-                # Threading fallback for dynamic mode
-                import threading
-                def sync_dynamic_init():
-                    prompt_server = ensure_tile_jobs_initialized()
-                    if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
-                        prompt_server.distributed_pending_tile_jobs[multi_job_id] = {
-                            'queue': asyncio.Queue(),
-                            'mode': 'dynamic',
-                            'pending_images': asyncio.Queue(),
-                            'completed_images': {},
-                            'completed_tiles': {},
-                            'batch_size': batch_size,
-                            'assigned_to_workers': assigned_to_workers,
-                            'worker_status': worker_status
-                        }
-                        # Initialize pending images queue with worker indices only
-                        pending_images = prompt_server.distributed_pending_tile_jobs[multi_job_id]['pending_images']
-                        for i in worker_indices:
-                            pending_images.put_nowait(i)
-                        debug_log(f"Synchronous dynamic init for {multi_job_id} with {len(worker_indices)} pending images for workers")
-                thread = threading.Thread(target=sync_dynamic_init)
-                thread.start()
-                thread.join(timeout=3.0)
-                if thread.is_alive():
-                    raise RuntimeError("Dynamic queue init failed")
+            run_async_in_server_loop(
+                self._init_job_queue_dynamic(multi_job_id, batch_size, assigned_to_workers, worker_status, all_indices),
+                timeout=2.0
+            )
         except Exception as e:
             debug_log(f"UltimateSDUpscale Master Dynamic - Queue initialization error: {e}")
             raise RuntimeError(f"Failed to initialize dynamic mode queue: {e}")
         
         # Convert batch to PIL list
-        result_images = []
-        for b in range(batch_size):
-            image_pil = tensor_to_pil(upscaled_image[b:b+1], 0)
-            # Ensure RGB mode for consistency
-            if image_pil.mode != 'RGB':
-                image_pil = image_pil.convert('RGB')
-            result_images.append(image_pil.copy())
+        result_images = [tensor_to_pil(upscaled_image[b:b+1], 0).convert('RGB').copy() for b in range(batch_size)]
         
-        # Process master's share locally
-        debug_log(f"UltimateSDUpscale Master Dynamic - Processing {master_images_count} images locally")
-        for idx in master_indices:
-            single_tensor = upscaled_image[idx:idx+1]
-            local_image = result_images[idx]
-            image_seed = seed + idx * 1000
+        # Process images dynamically with master participating
+        prompt_server = ensure_tile_jobs_initialized()
+        processed_count = 0
+        
+        # Process loop - master pulls from queue and processes synchronously
+        while True:
+            # Try to get an image to process using async helper
+            image_idx = run_async_in_server_loop(
+                self._get_next_image_index(multi_job_id),
+                timeout=5.0
+            )
+            
+            if image_idx is None:
+                break
+            
+            log(f"Master processing image {image_idx} dynamically")
+            processed_count += 1
+            
+            # Process locally
+            single_tensor = upscaled_image[image_idx:image_idx+1]
+            local_image = result_images[image_idx]
+            image_seed = seed + image_idx * 1000
+            
             for tile_idx, pos in enumerate(all_tiles):
                 local_image = self._process_and_blend_tile(
                     tile_idx, pos, single_tensor, local_image,
@@ -1188,31 +1155,53 @@ class UltimateSDUpscaleDistributed:
                     sampler_name, scheduler, denoise, tile_width, tile_height,
                     padding, mask_blur, width, height, tiled_decode
                 )
-            result_images[idx] = local_image
+            
+            result_images[image_idx] = local_image
+            
+            # Mark as completed using async helper
+            run_async_in_server_loop(
+                self._mark_image_completed(multi_job_id, image_idx, local_image),
+                timeout=5.0
+            )
         
-        # Process with workers using dynamic assignment
-        collected_images = run_async_in_server_loop(
-            self._async_process_dynamic(multi_job_id, expected_from_workers, num_workers),
-            timeout=TILE_COLLECTION_TIMEOUT * 2  # Longer timeout for full images
-        )
+        debug_log(f"Master processed {processed_count} images locally")
         
-        # Update result images with processed ones
-        for idx, processed_img in collected_images.items():
-            if idx < batch_size:
-                result_images[idx] = processed_img
+        # Collect remaining images from workers
+        expected_from_workers = batch_size - processed_count
+        if expected_from_workers > 0:
+            collected_images = run_async_in_server_loop(
+                self._async_collect_dynamic_images(multi_job_id, expected_from_workers, num_workers),
+                timeout=TILE_COLLECTION_TIMEOUT * 2
+            )
+            
+            # Update result images with worker results
+            for idx, processed_img in collected_images.items():
+                if idx < batch_size:
+                    result_images[idx] = processed_img
         
         # Convert back to tensor
-        if batch_size == 1:
-            result_tensor = pil_to_tensor(result_images[0])
-        else:
-            result_tensors = [pil_to_tensor(img) for img in result_images]
-            result_tensor = torch.cat(result_tensors, dim=0)
-        
+        result_tensor = torch.cat([pil_to_tensor(img) for img in result_images], dim=0) if batch_size > 1 else pil_to_tensor(result_images[0])
         if upscaled_image.is_cuda:
             result_tensor = result_tensor.cuda()
         
         debug_log(f"UltimateSDUpscale Master Dynamic - Job {multi_job_id} complete")
+        log(f"Completed processing all {batch_size} images")
         return (result_tensor,)
+    
+    
+    async def _get_next_image_index(self, multi_job_id):
+        """Get next image index from pending queue for master."""
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if not job_data or 'pending_images' not in job_data:
+                return None
+            try:
+                image_idx = await asyncio.wait_for(job_data['pending_images'].get(), timeout=0.1)
+                return image_idx
+            except asyncio.TimeoutError:
+                return None
+    
     
     def process_worker_dynamic(self, upscaled_image, model, positive, negative, vae,
                                   seed, steps, cfg, sampler_name, scheduler, denoise,
