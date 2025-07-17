@@ -1464,7 +1464,7 @@ if not hasattr(prompt_server, 'distributed_pending_jobs'):
 
 @server.PromptServer.instance.routes.post("/distributed/load_image")
 async def load_image_endpoint(request):
-    """Load an image or video file and return it as base64 data."""
+    """Load an image or video file and return it as base64 data with hash."""
     try:
         data = await request.json()
         image_path = data.get("image_path")
@@ -1475,12 +1475,20 @@ async def load_image_endpoint(request):
         import folder_paths
         import base64
         import io
+        import hashlib
         
         # Use ComfyUI's folder paths to find the file
         full_path = folder_paths.get_annotated_filepath(image_path)
         
         if not os.path.exists(full_path):
             return await handle_api_error(request, f"File not found: {image_path}", 404)
+        
+        # Calculate file hash
+        hash_md5 = hashlib.md5()
+        with open(full_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        file_hash = hash_md5.hexdigest()
         
         # Check if it's a video file
         video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
@@ -1505,7 +1513,8 @@ async def load_image_endpoint(request):
             video_base64 = base64.b64encode(file_data).decode('utf-8')
             return web.json_response({
                 "status": "success",
-                "image_data": f"data:{mime_type};base64,{video_base64}"
+                "image_data": f"data:{mime_type};base64,{video_base64}",
+                "hash": file_hash
             })
         else:
             # For images, use PIL
@@ -1524,8 +1533,51 @@ async def load_image_endpoint(request):
             
             return web.json_response({
                 "status": "success",
-                "image_data": f"data:image/png;base64,{img_base64}"
+                "image_data": f"data:image/png;base64,{img_base64}",
+                "hash": file_hash
             })
+        
+    except Exception as e:
+        return await handle_api_error(request, e, 500)
+
+@server.PromptServer.instance.routes.post("/distributed/check_file")
+async def check_file_endpoint(request):
+    """Check if a file exists and matches the given hash."""
+    try:
+        data = await request.json()
+        filename = data.get("filename")
+        expected_hash = data.get("hash")
+        
+        if not filename or not expected_hash:
+            return await handle_api_error(request, "Missing filename or hash", 400)
+        
+        import folder_paths
+        import hashlib
+        
+        # Use ComfyUI's folder paths to find the file
+        full_path = folder_paths.get_annotated_filepath(filename)
+        
+        if not os.path.exists(full_path):
+            return web.json_response({
+                "status": "success",
+                "exists": False
+            })
+        
+        # Calculate file hash
+        hash_md5 = hashlib.md5()
+        with open(full_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        file_hash = hash_md5.hexdigest()
+        
+        # Check if hash matches
+        hash_matches = file_hash == expected_hash
+        
+        return web.json_response({
+            "status": "success",
+            "exists": True,
+            "hash_matches": hash_matches
+        })
         
     except Exception as e:
         return await handle_api_error(request, e, 500)

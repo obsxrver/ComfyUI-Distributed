@@ -325,20 +325,27 @@ async function dispatchToWorker(extension, worker, prompt, workflow, imageRefere
     
     // Handle image uploads for remote workers
     if (imageReferences && imageReferences.size > 0) {
-        extension.log(`[Distributed] Processing ${imageReferences.size} image(s) for remote worker`, "debug");
+        // Check if this is a local worker (same host as master)
+        const isLocalWorker = workerUrl.includes('127.0.0.1') || workerUrl.includes('localhost');
         
-        try {
-            // Load images from master
-            const images = await loadImagesForWorker(extension, imageReferences);
+        if (isLocalWorker) {
+            extension.log(`[Distributed] Skipping image processing for local worker ${worker.name} (shares filesystem with master)`, "debug");
+        } else {
+            extension.log(`[Distributed] Processing ${imageReferences.size} image(s) for remote worker`, "debug");
             
-            // Upload images to worker
-            if (images.length > 0) {
-                await uploadImagesToWorker(extension, workerUrl, images);
-                extension.log(`[Distributed] Successfully uploaded ${images.length} image(s) to worker`, "debug");
+            try {
+                // Load images from master
+                const images = await loadImagesForWorker(extension, imageReferences);
+                
+                // Upload images to worker
+                if (images.length > 0) {
+                    await uploadImagesToWorker(extension, workerUrl, images);
+                    extension.log(`[Distributed] Successfully uploaded ${images.length} image(s) to worker`, "debug");
+                }
+            } catch (error) {
+                extension.log(`Failed to process images for worker ${worker.name}: ${error.message}`, "error");
+                // Continue with workflow execution even if image upload fails
             }
-        } catch (error) {
-            extension.log(`Failed to process images for worker ${worker.name}: ${error.message}`, "error");
-            // Continue with workflow execution even if image upload fails
         }
     }
     
@@ -391,7 +398,8 @@ export async function loadImagesForWorker(extension, imageReferences) {
                 const data = await extension.api.loadImage(filename);
                 const imageData = {
                     name: filename,
-                    image: data.image_data
+                    image: data.image_data,
+                    hash: data.hash  // Include hash from the response
                 };
                 images.push(imageData);
                 
@@ -421,6 +429,32 @@ export async function loadImagesForWorker(extension, imageReferences) {
 export async function uploadImagesToWorker(extension, workerUrl, images) {
     // Upload images to worker's ComfyUI instance
     for (const imageData of images) {
+        // Check if file already exists with matching hash
+        if (imageData.hash) {
+            try {
+                const checkResponse = await fetch(`${workerUrl}/distributed/check_file`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    mode: 'cors',
+                    body: JSON.stringify({ 
+                        filename: imageData.name, 
+                        hash: imageData.hash 
+                    })
+                });
+                
+                if (checkResponse.ok) {
+                    const result = await checkResponse.json();
+                    if (result.exists && result.hash_matches) {
+                        extension.log(`File ${imageData.name} already exists on worker with matching hash, skipping upload`, "debug");
+                        continue;
+                    }
+                }
+            } catch (error) {
+                // If check fails, proceed with upload
+                extension.log(`Failed to check file existence for ${imageData.name}: ${error.message}`, "debug");
+            }
+        }
+        
         const formData = new FormData();
         
         // Detect MIME type from base64 header (supports both image and video)
