@@ -1777,14 +1777,12 @@ class DistributedCollectorNode:
         if batch_size == 0:
             return
         
-        debug_log(f"Worker - Sending {batch_size} images in chunks of max {MAX_BATCH}")
         
         for start in range(0, batch_size, MAX_BATCH):
             chunk = image_batch[start:start + MAX_BATCH]
             chunk_size = chunk.shape[0]
             is_chunk_last = (start + chunk_size == batch_size)  # True only for final chunk
             
-            debug_log(f"Worker - Processing chunk {start//MAX_BATCH + 1}, images {start} to {start + chunk_size - 1}")
             
             data = aiohttp.FormData()
             data.add_field('multi_job_id', multi_job_id)
@@ -1806,21 +1804,11 @@ class DistributedCollectorNode:
                 data.add_field(f'image_{j}', byte_io, filename=f'image_{j}.png', content_type='image/png')
             
             try:
-                # Estimate payload size for logging
-                payload_size = 0
-                for field in data._fields:
-                    if hasattr(field[2], 'read'):
-                        field[2].seek(0)
-                        payload_size += len(field[2].read())
-                        field[2].seek(0)
-                debug_log(f"Worker - Chunk payload size: {payload_size:,} bytes")
                 
                 session = await get_client_session()
                 url = f"{master_url}/distributed/job_complete"
-                debug_log(f"Worker - Sending chunk of {chunk_size} images to URL: {url}")
                 async with session.post(url, data=data) as response:
                     response.raise_for_status()
-                    debug_log(f"Worker - Successfully sent chunk of {chunk_size} images")
             except Exception as e:
                 log(f"Worker - Failed to send chunk to master: {e}")
                 debug_log(f"Worker - Full error details: URL={url}")
@@ -1847,8 +1835,6 @@ class DistributedCollectorNode:
             # Ensure master images are contiguous
             images_on_cpu = ensure_contiguous(images_on_cpu)
             
-            # Debug: Check master tensor properties
-            debug_log(f"Master tensor - shape: {images_on_cpu.shape}, dtype: {images_on_cpu.dtype}, device: {images_on_cpu.device}")
             
             # Initialize storage for collected images
             worker_images = {}  # Dict to store images by worker_id and index
@@ -1869,13 +1855,11 @@ class DistributedCollectorNode:
             # Use a reasonable timeout for the first image
             timeout = WORKER_JOB_TIMEOUT
             
-            debug_log(f"Master - Starting collection loop, expecting {num_workers} workers")
             
             # Get queue size before starting
             async with prompt_server.distributed_jobs_lock:
                 q = prompt_server.distributed_pending_jobs[multi_job_id]
                 initial_size = q.qsize()
-            debug_log(f"Master - Queue size before collection: {initial_size}")
 
             # NEW: Initialize progress bar for workers (total = num_workers)
             p = ProgressBar(num_workers)
@@ -1887,7 +1871,6 @@ class DistributedCollectorNode:
                         q = prompt_server.distributed_pending_jobs[multi_job_id]
                         current_size = q.qsize()
                     
-                    debug_log(f"Master - Waiting for queue item, timeout={timeout}s, queue size={current_size}")
                     
                     result = await asyncio.wait_for(q.get(), timeout=timeout)
                     worker_id = result['worker_id']
@@ -1906,9 +1889,6 @@ class DistributedCollectorNode:
                         for idx, tensor in enumerate(tensors):
                             worker_images[worker_id][idx] = tensor
                             
-                            # Debug: Check worker tensor properties
-                            if collected_count == 0:  # Only print once
-                                debug_log(f"Master - Worker tensor - shape: {tensor.shape}, dtype: {tensor.dtype}, device: {tensor.device}")
                         
                         collected_count += len(tensors)
                     else:
@@ -1922,9 +1902,6 @@ class DistributedCollectorNode:
                             worker_images[worker_id] = {}
                         worker_images[worker_id][image_index] = tensor
                         
-                        # Debug: Check worker tensor properties
-                        if collected_count == 0:  # Only print once
-                            debug_log(f"Master - Worker tensor - shape: {tensor.shape}, dtype: {tensor.dtype}, device: {tensor.device}")
                         
                         collected_count += 1
                     
@@ -1934,9 +1911,7 @@ class DistributedCollectorNode:
                     if is_last:
                         workers_done.add(worker_id)
                         p.update(1)  # +1 per completed worker
-                        debug_log(f"Master - Worker {worker_id} done. Collected {len(worker_images[worker_id])} images")
                     else:
-                        debug_log(f"Master - Collected image {image_index + 1} from worker {worker_id}")
                     
                 except asyncio.TimeoutError:
                     missing_workers = set(str(w) for w in enabled_workers) - workers_done
@@ -1947,7 +1922,6 @@ class DistributedCollectorNode:
                         if multi_job_id in prompt_server.distributed_pending_jobs:
                             final_q = prompt_server.distributed_pending_jobs[multi_job_id]
                             final_size = final_q.qsize()
-                            debug_log(f"Master - Queue size at timeout: {final_size}")
                             
                             # Try to drain any remaining items
                             remaining_items = []
@@ -1959,7 +1933,6 @@ class DistributedCollectorNode:
                                     break
                             
                             if remaining_items:
-                                debug_log(f"Master - Found {len(remaining_items)} items in queue after timeout!")
                                 # Process them
                                 for item in remaining_items:
                                     worker_id = item['worker_id']
@@ -1990,15 +1963,11 @@ class DistributedCollectorNode:
                                     if is_last:
                                         workers_done.add(worker_id)
                                         p.update(1)  # +1 here too
-                                        debug_log(f"Master - Worker {worker_id} done (found in timeout drain)")
                         else:
                             log(f"Master - Queue {multi_job_id} no longer exists!")
                     break
             
             total_collected = sum(len(imgs) for imgs in worker_images.values())
-            debug_log(f"Master - Collection complete. Received {total_collected} images from {len(workers_done)} workers")
-            debug_log(f"Master - Workers done: {workers_done}, Enabled workers: {enabled_workers}")
-            debug_log(f"Master - Worker images keys: {list(worker_images.keys())}")
             
             # Clean up job queue
             async with prompt_server.distributed_jobs_lock:
@@ -2038,7 +2007,6 @@ class DistributedCollectorNode:
                 return (combined,)
             except Exception as e:
                 log(f"Master - Error combining images: {e}")
-                debug_log(f"Master - Tensor shapes: {[t.shape for t in cpu_tensors]}")
                 # Return just the master images as fallback
                 return (images,)
 

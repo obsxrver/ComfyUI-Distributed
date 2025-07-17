@@ -572,8 +572,6 @@ class UltimateSDUpscaleDistributed:
         """Initialize the job queue for collecting tiles."""
         prompt_server = ensure_tile_jobs_initialized()
         async with prompt_server.distributed_tile_jobs_lock:
-            debug_log(f"UltimateSDUpscale Master - _init_job_queue: Checking if {multi_job_id} exists in distributed_pending_tile_jobs")
-            debug_log(f"UltimateSDUpscale Master - _init_job_queue: Current jobs: {list(prompt_server.distributed_pending_tile_jobs.keys())}")
             if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
                 prompt_server.distributed_pending_tile_jobs[multi_job_id] = {
                     'queue': asyncio.Queue(),
@@ -581,9 +579,6 @@ class UltimateSDUpscaleDistributed:
                     'completed_tiles': {}  # For static mode data
                 }
                 debug_log(f"UltimateSDUpscale Master - Initialized job queue for {multi_job_id}")
-                debug_log(f"UltimateSDUpscale Master - _init_job_queue: Created new queue for {multi_job_id}")
-            else:
-                debug_log(f"UltimateSDUpscale Master - _init_job_queue: Queue already exists for {multi_job_id}")
     
     async def _async_collect_worker_tiles(self, multi_job_id, num_workers):
         """Async helper to collect tiles from workers."""
@@ -606,7 +601,6 @@ class UltimateSDUpscaleDistributed:
         debug_log(f"UltimateSDUpscale Master - Starting collection, expecting {num_workers} workers to complete")
         
         while len(workers_done) < num_workers:
-            debug_log(f"UltimateSDUpscale Master - Loop status: {len(workers_done)}/{num_workers} workers done, {len(collected_tiles)} tiles collected, workers_done set: {workers_done}")
             try:
                 result = await asyncio.wait_for(q.get(), timeout=timeout)
                 worker_id = result['worker_id']
@@ -651,12 +645,9 @@ class UltimateSDUpscaleDistributed:
                 if is_last:
                     workers_done.add(worker_id)
                     debug_log(f"UltimateSDUpscale Master - Worker {worker_id} completed")
-                    debug_log(f"UltimateSDUpscale Master - Worker '{worker_id}' marked as done. Total workers done: {len(workers_done)}/{num_workers}")
                 
             except asyncio.TimeoutError:
                 log(f"UltimateSDUpscale Master - Timeout waiting for tiles")
-                debug_log(f"UltimateSDUpscale Master - Final status: {len(workers_done)}/{num_workers} workers done, {len(collected_tiles)} tiles collected")
-                debug_log(f"UltimateSDUpscale Master - Workers that completed: {workers_done}")
                 break
         
         debug_log(f"UltimateSDUpscale Master - Collection complete. Got {len(collected_tiles)} tiles from {len(workers_done)} workers")
@@ -724,7 +715,7 @@ class UltimateSDUpscaleDistributed:
                             job_data_check = prompt_server.distributed_pending_tile_jobs[multi_job_id]
                             # Check for timed out workers (60 second timeout)
                             for worker, last_heartbeat in list(job_data_check.get('worker_status', {}).items()):
-                                if current_time - last_heartbeat > 60:
+                                if current_time - last_heartbeat > 30:
                                     log(f"UltimateSDUpscale Master Dynamic - Worker {worker} timed out")
                                     # Requeue assigned images from this worker
                                     for idx in job_data_check.get('assigned_to_workers', {}).get(worker, []):
@@ -875,22 +866,6 @@ class UltimateSDUpscaleDistributed:
         Note: positive and negative should already be pre-sliced for the current batch_idx."""
         debug_log(f"[process_tile] Processing tile for batch_idx={batch_idx}, seed={seed}, region={region}")
         
-        # Log conditioning details
-        debug_log(f"[process_tile] Positive conditioning items: {len(positive)}")
-        debug_log(f"[process_tile] Negative conditioning items: {len(negative)}")
-        
-        # Check for ControlNet in conditioning
-        for i, (emb, cond_dict) in enumerate(positive):
-            if 'control' in cond_dict:
-                control = cond_dict['control']
-                debug_log(f"[process_tile] Found ControlNet in positive[{i}]")
-                debug_log(f"[process_tile] Control id: {id(control)}")
-                if hasattr(control, 'control_model'):
-                    debug_log(f"[process_tile] control_model id: {id(control.control_model)}")
-                if hasattr(control, 'cond_hint_original'):
-                    debug_log(f"[process_tile] cond_hint_original shape: {control.cond_hint_original.shape}")
-                    debug_log(f"[process_tile] Expected to use hint at index {batch_idx} from batch")
-                debug_log(f"[process_tile] Embedding shape: {emb.shape}")
         
         # Import here to avoid circular dependencies
         from nodes import common_ksampler, VAEEncode, VAEDecode
@@ -930,26 +905,16 @@ class UltimateSDUpscaleDistributed:
             positive_cropped = positive_tile
             negative_cropped = negative_tile
         
-        # Encode to latent
-        if tiled_decode and tiled_vae_available:
-            latent = VAEEncodeTiled().encode(vae, clean_tensor)[0]
-        else:
-            latent = VAEEncode().encode(vae, clean_tensor)[0]
-        
-        # Log latent shape
-        if 'samples' in latent:
-            debug_log(f"[process_tile] Latent shape: {latent['samples'].shape}")
+        # Encode to latent (always non-tiled, matching original node)
+        latent = VAEEncode().encode(vae, clean_tensor)[0]
         
         # Sample
-        debug_log(f"[process_tile] About to call common_ksampler with batch_idx={batch_idx}")
-        debug_log(f"[process_tile] Model id: {id(model)}")
         samples = common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, 
                                 positive_cropped, negative_cropped, latent, denoise=denoise)[0]
-        debug_log(f"[process_tile] common_ksampler completed")
         
         # Decode back to image
         if tiled_decode and tiled_vae_available:
-            image = VAEDecodeTiled().decode(vae, samples)[0]
+            image = VAEDecodeTiled().decode(vae, samples, tile_size=512)[0]
         else:
             image = VAEDecode().decode(vae, samples)[0]
         
@@ -1032,8 +997,6 @@ class UltimateSDUpscaleDistributed:
             chunk_size = len(chunk)
             is_chunk_last = (start + chunk_size == total_tiles)  # True only for final chunk
             
-            debug_log(f"UltimateSDUpscale Worker - Processing chunk {start//MAX_BATCH + 1}, tiles {start} to {start + chunk_size - 1}")
-            
             data = aiohttp.FormData()
             data.add_field('multi_job_id', multi_job_id)
             data.add_field('worker_id', str(worker_id))
@@ -1072,14 +1035,6 @@ class UltimateSDUpscaleDistributed:
                 # Add image field
                 data.add_field(f'tile_{j}', byte_io, filename=f'tile_{j}.png', content_type='image/png')
             
-            # Estimate payload size for logging
-            payload_size = 0
-            for field in data._fields:
-                if hasattr(field[2], 'read'):
-                    field[2].seek(0)
-                    payload_size += len(field[2].read())
-                    field[2].seek(0)
-            debug_log(f"UltimateSDUpscale Worker - Chunk payload size: {payload_size:,} bytes")
             
             # Retry logic with exponential backoff
             max_retries = 5
@@ -1090,16 +1045,12 @@ class UltimateSDUpscaleDistributed:
                     session = await get_client_session()
                     url = f"{master_url}/distributed/tile_complete"
                     
-                    debug_log(f"UltimateSDUpscale Worker - Sending chunk of {chunk_size} tiles to {url}, attempt {attempt + 1}")
-                    
                     async with session.post(url, data=data) as response:
                         response.raise_for_status()
-                        debug_log(f"UltimateSDUpscale Worker - Successfully sent chunk of {chunk_size} tiles")
                         break  # Success, move to next chunk
                         
                 except Exception as e:
                     if attempt < max_retries - 1:
-                        debug_log(f"UltimateSDUpscale Worker - Retry {attempt + 1}/{max_retries} after error: {e}")
                         await asyncio.sleep(retry_delay)
                         retry_delay *= 2  # Exponential backoff
                     else:
@@ -1260,6 +1211,7 @@ class UltimateSDUpscaleDistributed:
                         sampler_name, scheduler, denoise, tile_width, tile_height,
                         padding, mask_blur, width, height, tiled_decode, batch_idx=image_idx
                     )
+                    # Note: No per-tile drain here – that's what makes this "per-image"
                 
                 result_images[image_idx] = local_image
                 
@@ -1268,6 +1220,22 @@ class UltimateSDUpscaleDistributed:
                     self._mark_image_completed(multi_job_id, image_idx, local_image),
                     timeout=5.0
                 )
+                
+                # NEW: Drain after the full image is marked complete (catches workers who finished during master's processing)
+                drained_count = run_async_in_server_loop(
+                    self._drain_worker_results_queue(multi_job_id),
+                    timeout=5.0
+                )
+                
+                if drained_count > 0:
+                    debug_log(f"Drained {drained_count} worker images after master's image {image_idx}")
+                
+                # NEW: Log overall progress (includes master's image + any drained workers)
+                completed_now = run_async_in_server_loop(
+                    self._get_total_completed_count(multi_job_id),
+                    timeout=1.0
+                )
+                log(f"Progress: {completed_now}/{batch_size} images completed")
             else:
                 # Queue empty: collect any queued worker results to update progress
                 drained_count = run_async_in_server_loop(
@@ -1291,11 +1259,9 @@ class UltimateSDUpscaleDistributed:
                     timeout=1.0
                 )
                 
+                log(f"Progress: {completed_now}/{batch_size} images completed")
                 
-                debug_log(f"Queue empty, completed count: {completed_now}/{batch_size}")
-
                 if completed_now >= batch_size:
-                    debug_log("All images completed, exiting master loop")
                     break
 
                 # Check if there are pending images in the queue (could be requeued)
@@ -1305,7 +1271,6 @@ class UltimateSDUpscaleDistributed:
                 )
                 
                 if pending_count > 0:
-                    debug_log(f"Found {pending_count} pending images (possibly requeued), continuing to process")
                     consecutive_retries = 0  # Reset retries since there's work to do
                     continue
 
@@ -1314,7 +1279,7 @@ class UltimateSDUpscaleDistributed:
                     log(f"Max retries ({max_consecutive_retries}) reached. Forcing collection of remaining results.")
                     break  # Force exit to collection phase
 
-                log("Queue empty temporarily, waiting 2s before retry")
+                debug_log("Waiting for workers")
                 time.sleep(2)
         
         debug_log(f"Master processed {processed_count} images locally")
@@ -1455,7 +1420,7 @@ class UltimateSDUpscaleDistributed:
             
             # Check for timed out workers (60 second timeout)
             for worker, last_heartbeat in list(job_data.get('worker_status', {}).items()):
-                if current_time - last_heartbeat > 60:
+                if current_time - last_heartbeat > 30:
                     log(f"Worker {worker} timed out")
                     # Requeue assigned images from this worker
                     for idx in job_data.get('assigned_to_workers', {}).get(worker, []):
@@ -1701,9 +1666,8 @@ class UltimateSDUpscaleDistributed:
             
             async with session.post(url, json=data) as response:
                 response.raise_for_status()
-                debug_log(f"Worker {worker_id} sent heartbeat")
         except Exception as e:
-            debug_log(f"Worker {worker_id} heartbeat failed: {e}")
+            pass
     
     async def _send_worker_complete_signal(self, multi_job_id, master_url, worker_id):
         """Send completion signal to master in dynamic mode."""
@@ -2062,9 +2026,6 @@ async def tile_complete_endpoint(request):
 
         # Put tiles into queue
         async with prompt_server.distributed_tile_jobs_lock:
-            debug_log(f"UltimateSDUpscale - tile_complete: Checking distributed_pending_tile_jobs for job {multi_job_id}")
-            debug_log(f"UltimateSDUpscale - tile_complete: Current jobs in distributed_pending_tile_jobs: {list(prompt_server.distributed_pending_tile_jobs.keys())}")
-            
             if multi_job_id in prompt_server.distributed_pending_tile_jobs:
                 job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
                 if not isinstance(job_data, dict) or 'mode' not in job_data:
@@ -2080,7 +2041,6 @@ async def tile_complete_endpoint(request):
                         'tiles': tiles,
                         'is_last': is_last
                     })
-                    debug_log(f"UltimateSDUpscale - Received batch of {len(tiles)} tiles for job {multi_job_id} from worker {worker_id}")
                 else:
                     # Put single tile (backward compat)
                     tile_data = tiles[0]
@@ -2095,12 +2055,9 @@ async def tile_complete_endpoint(request):
                         'padding': tile_data['padding'],
                         'is_last': is_last
                     })
-                    debug_log(f"UltimateSDUpscale - Received single tile {tile_data['tile_idx']} for job {multi_job_id} from worker {worker_id}")
                     
                 return web.json_response({"status": "success"})
             else:
-                debug_log(f"UltimateSDUpscale - API Error: Job {multi_job_id} not found in distributed_pending_tile_jobs")
-                debug_log(f"UltimateSDUpscale - API Error: Available jobs: {list(prompt_server.distributed_pending_tile_jobs.keys())}")
                 return await handle_api_error(request, "Job not found or already complete", 404)
     except Exception as e:
         return await handle_api_error(request, e, 500)
