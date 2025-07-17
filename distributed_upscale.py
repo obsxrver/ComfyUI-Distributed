@@ -54,12 +54,11 @@ def ensure_tile_jobs_initialized():
         prompt_server.distributed_tile_jobs_lock = asyncio.Lock()
     else:
         # Clean up any legacy queue structures that don't have the 'mode' field
-        to_remove = []
-        for job_id, job_data in prompt_server.distributed_pending_tile_jobs.items():
-            if not isinstance(job_data, dict) or 'mode' not in job_data:
-                debug_log(f"Removing legacy queue structure for job {job_id}")
-                to_remove.append(job_id)
+        # (Should be rare after fixes, but keep for safety)
+        to_remove = [job_id for job_id, job_data in prompt_server.distributed_pending_tile_jobs.items()
+                     if not isinstance(job_data, dict) or 'mode' not in job_data]
         for job_id in to_remove:
+            debug_log(f"Removing legacy queue structure for job {job_id}")
             del prompt_server.distributed_pending_tile_jobs[job_id]
     return prompt_server
 
@@ -132,24 +131,7 @@ class UltimateSDUpscaleDistributed:
     
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        """Force re-execution and ensure queues exist for the job."""
-        multi_job_id = kwargs.get('multi_job_id', '')
-        if multi_job_id:
-            # Initialize queue for this job immediately
-            prompt_server = ensure_tile_jobs_initialized()
-            loop = get_server_loop()
-            
-            async def init_queue():
-                async with prompt_server.distributed_tile_jobs_lock:
-                    if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
-                        prompt_server.distributed_pending_tile_jobs[multi_job_id] = asyncio.Queue()
-                        debug_log(f"UltimateSDUpscaleDistributed - Pre-initialized queue for job {multi_job_id}")
-            
-            try:
-                asyncio.run_coroutine_threadsafe(init_queue(), loop).result(timeout=1.0)
-            except Exception as e:
-                debug_log(f"UltimateSDUpscaleDistributed - Error pre-initializing queue: {e}")
-        
+        """Force re-execution."""
         return float("nan")  # Always re-execute
     
     def run(self, upscaled_image, model, positive, negative, vae, seed, steps, cfg, 
@@ -295,20 +277,6 @@ class UltimateSDUpscaleDistributed:
         enabled_workers = json.loads(enabled_worker_ids)
         num_workers = len(enabled_workers)
         
-        # Synchronous queue initialization before mode determination
-        import threading
-        def sync_init():
-            prompt_server = ensure_tile_jobs_initialized()
-            if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
-                prompt_server.distributed_pending_tile_jobs[multi_job_id] = asyncio.Queue()
-                debug_log(f"Synchronous queue init for {multi_job_id}")
-        thread = threading.Thread(target=sync_init)
-        thread.start()
-        thread.join(timeout=5.0)  # Block with timeout
-        if thread.is_alive():
-            log(f"Queue init timed out for {multi_job_id}")
-            raise RuntimeError("Queue init failed")
-        
         # Determine processing mode
         if num_workers == 0:
             mode = "single_gpu"
@@ -345,11 +313,7 @@ class UltimateSDUpscaleDistributed:
             debug_log(f"UltimateSDUpscale Master - Queue initialization complete")
         except Exception as e:
             debug_log(f"UltimateSDUpscale Master - Queue initialization error: {e}")
-            # Try synchronous initialization as fallback
-            prompt_server = ensure_tile_jobs_initialized()
-            if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
-                prompt_server.distributed_pending_tile_jobs[multi_job_id] = asyncio.Queue()
-                debug_log(f"UltimateSDUpscale Master - Queue initialized via fallback")
+            raise RuntimeError(f"Failed to initialize static mode queue: {e}")
         
         # Don't try to prepare via API since we're using local queues
         # loop = asyncio.new_event_loop()
