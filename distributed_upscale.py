@@ -1656,10 +1656,6 @@ async def tile_complete_endpoint(request):
                                 tile_data = metadata[i]
                                 tile_idx = tile_data.get('tile_idx', i)
                                 
-                                # Validate order
-                                if i != tile_idx % batch_size:
-                                    debug_log(f"Warning: Tile order mismatch at position {i}, expected tile_idx {tile_idx}")
-                                
                                 tile_info = {
                                     'tensor': tensor,
                                     'tile_idx': tile_idx,
