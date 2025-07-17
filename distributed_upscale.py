@@ -674,8 +674,8 @@ class UltimateSDUpscaleDistributed:
             if job_data and 'completed_images' in job_data:
                 job_data['completed_images'][image_idx] = image_pil
 
-    async def _async_collect_dynamic_images(self, multi_job_id, expected_from_workers, num_workers):
-        """Collect processed images from workers only."""
+    async def _async_collect_dynamic_images(self, multi_job_id, remaining_to_collect, num_workers, batch_size, master_processed_count):
+        """Collect remaining processed images from workers."""
         prompt_server = ensure_tile_jobs_initialized()
         async with prompt_server.distributed_tile_jobs_lock:
             if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
@@ -693,9 +693,9 @@ class UltimateSDUpscaleDistributed:
         timeout = TILE_WAIT_TIMEOUT * 2  # Longer timeout for full images
         last_heartbeat_check = time.time()
         
-        debug_log(f"UltimateSDUpscale Master Dynamic - Waiting for {expected_from_workers} images from {num_workers} workers")
+        debug_log(f"UltimateSDUpscale Master Dynamic - Waiting for {remaining_to_collect} more images from {num_workers} workers")
         
-        while collected_count < expected_from_workers and len(workers_done) < num_workers:
+        while collected_count < remaining_to_collect and len(workers_done) < num_workers:
             try:
                 result = await asyncio.wait_for(q.get(), timeout=10.0)  # Shorter timeout for regular checks
                 worker_id = result['worker_id']
@@ -723,14 +723,30 @@ class UltimateSDUpscaleDistributed:
                             for worker, last_heartbeat in list(job_data_check.get('worker_status', {}).items()):
                                 if current_time - last_heartbeat > 60:
                                     log(f"UltimateSDUpscale Master Dynamic - Worker {worker} timed out")
+                                    # Requeue assigned images from this worker
+                                    for idx in job_data_check.get('assigned_to_workers', {}).get(worker, []):
+                                        if idx not in completed_images:
+                                            await job_data_check['pending_images'].put(idx)
+                                            debug_log(f"UltimateSDUpscale Master Dynamic - Requeued image {idx} from timed out worker {worker}")
+                                    # Mark worker as done and clean up
                                     workers_done.add(worker)
                                     if 'worker_status' in job_data_check:
                                         del job_data_check['worker_status'][worker]
+                                    if 'assigned_to_workers' in job_data_check:
+                                        job_data_check['assigned_to_workers'][worker] = []
                     last_heartbeat_check = current_time
                 
                 # Check if we've been waiting too long overall
                 if current_time - last_heartbeat_check > timeout:
                     log(f"UltimateSDUpscale Master Dynamic - Overall timeout waiting for images")
+                    # Requeue all unfinished images
+                    async with prompt_server.distributed_tile_jobs_lock:
+                        if multi_job_id in prompt_server.distributed_pending_tile_jobs:
+                            pending_queue = prompt_server.distributed_pending_tile_jobs[multi_job_id]['pending_images']
+                            for idx in range(batch_size):
+                                if idx not in completed_images:
+                                    await pending_queue.put(idx)
+                                    debug_log(f"UltimateSDUpscale Master Dynamic - Requeued image {idx}")
                     break
         
         debug_log(f"UltimateSDUpscale Master Dynamic - Collection complete. Got {collected_count} images from workers")
@@ -1128,56 +1144,106 @@ class UltimateSDUpscaleDistributed:
         # Process images dynamically with master participating
         prompt_server = ensure_tile_jobs_initialized()
         processed_count = 0
+        consecutive_retries = 0
+        max_consecutive_retries = 10
         
         # Process loop - master pulls from queue and processes synchronously
-        while True:
-            # Try to get an image to process using async helper
+        while processed_count < batch_size:
+            # Try to get an image to process
             image_idx = run_async_in_server_loop(
                 self._get_next_image_index(multi_job_id),
-                timeout=5.0
+                timeout=5.0  # Short timeout to allow frequent checks
             )
-            
-            if image_idx is None:
-                break
-            
-            log(f"Master processing image {image_idx} dynamically")
-            processed_count += 1
-            
-            # Process locally
-            single_tensor = upscaled_image[image_idx:image_idx+1]
-            local_image = result_images[image_idx]
-            image_seed = seed + image_idx * 1000
-            
-            for tile_idx, pos in enumerate(all_tiles):
-                local_image = self._process_and_blend_tile(
-                    tile_idx, pos, single_tensor, local_image,
-                    model, positive, negative, vae, image_seed, steps, cfg,
-                    sampler_name, scheduler, denoise, tile_width, tile_height,
-                    padding, mask_blur, width, height, tiled_decode
+
+            if image_idx is not None:
+                # Reset retry counter and process locally
+                consecutive_retries = 0
+                debug_log(f"Master processing image {image_idx} dynamically")
+                processed_count += 1
+                
+                # Get total completed count for accurate progress
+                total_completed = run_async_in_server_loop(
+                    self._get_total_completed_count(multi_job_id),
+                    timeout=1.0
                 )
-            
-            result_images[image_idx] = local_image
-            
-            # Mark as completed using async helper
-            run_async_in_server_loop(
-                self._mark_image_completed(multi_job_id, image_idx, local_image),
-                timeout=5.0
-            )
+                log(f"{total_completed}/{batch_size} completed images")
+
+                # Process locally
+                single_tensor = upscaled_image[image_idx:image_idx+1]
+                local_image = result_images[image_idx]
+                image_seed = seed + image_idx * 1000
+                
+                for tile_idx, pos in enumerate(all_tiles):
+                    local_image = self._process_and_blend_tile(
+                        tile_idx, pos, single_tensor, local_image,
+                        model, positive, negative, vae, image_seed, steps, cfg,
+                        sampler_name, scheduler, denoise, tile_width, tile_height,
+                        padding, mask_blur, width, height, tiled_decode
+                    )
+                
+                result_images[image_idx] = local_image
+                
+                # Mark as completed
+                run_async_in_server_loop(
+                    self._mark_image_completed(multi_job_id, image_idx, local_image),
+                    timeout=5.0
+                )
+            else:
+                # Queue empty: collect any queued worker results to update progress
+                drained_count = run_async_in_server_loop(
+                    self._drain_worker_results_queue(multi_job_id),
+                    timeout=5.0
+                )
+
+                # Now check total completed (includes newly collected)
+                completed_now = run_async_in_server_loop(
+                    self._get_total_completed_count(multi_job_id),
+                    timeout=1.0
+                )
+                
+                # Show accurate progress if we drained any new results
+                if drained_count > 0:
+                    log(f"{completed_now}/{batch_size} completed images")
+                
+                debug_log(f"Queue empty, completed count: {completed_now}/{batch_size}")
+
+                if completed_now >= batch_size:
+                    debug_log("All images completed, exiting master loop")
+                    break
+
+                consecutive_retries += 1
+                if consecutive_retries >= max_consecutive_retries:
+                    log(f"Max retries ({max_consecutive_retries}) reached. Forcing collection of remaining results.")
+                    break  # Force exit to collection phase
+
+                log("Queue empty temporarily, waiting 2s before retry")
+                time.sleep(2)
         
         debug_log(f"Master processed {processed_count} images locally")
         
-        # Collect remaining images from workers
-        expected_from_workers = batch_size - processed_count
-        if expected_from_workers > 0:
+        # Get all completed images to check what needs to be collected
+        all_completed = run_async_in_server_loop(
+            self._get_all_completed_images(multi_job_id),
+            timeout=5.0
+        )
+        
+        # Calculate how many we still need to collect
+        remaining_to_collect = batch_size - len(all_completed)
+        
+        if remaining_to_collect > 0:
+            debug_log(f"Waiting for {remaining_to_collect} more images from workers")
             collected_images = run_async_in_server_loop(
-                self._async_collect_dynamic_images(multi_job_id, expected_from_workers, num_workers),
+                self._async_collect_dynamic_images(multi_job_id, remaining_to_collect, num_workers, batch_size, processed_count),
                 timeout=TILE_COLLECTION_TIMEOUT * 2
             )
             
-            # Update result images with worker results
-            for idx, processed_img in collected_images.items():
-                if idx < batch_size:
-                    result_images[idx] = processed_img
+            # Merge collected with already completed
+            all_completed.update(collected_images)
+        
+        # Update result images with all completed images
+        for idx, processed_img in all_completed.items():
+            if idx < batch_size:
+                result_images[idx] = processed_img
         
         # Convert back to tensor
         result_tensor = torch.cat([pil_to_tensor(img) for img in result_images], dim=0) if batch_size > 1 else pil_to_tensor(result_images[0])
@@ -1197,10 +1263,76 @@ class UltimateSDUpscaleDistributed:
             if not job_data or 'pending_images' not in job_data:
                 return None
             try:
-                image_idx = await asyncio.wait_for(job_data['pending_images'].get(), timeout=0.1)
+                image_idx = await asyncio.wait_for(job_data['pending_images'].get(), timeout=1.0)
                 return image_idx
             except asyncio.TimeoutError:
                 return None
+    
+    async def _get_completed_count(self, multi_job_id):
+        """Get count of completed images from workers."""
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if job_data and 'completed_images' in job_data:
+                # Count only worker-completed images (not master's)
+                completed = job_data['completed_images']
+                worker_count = len([idx for idx in completed if isinstance(completed[idx], Image.Image)])
+                return worker_count
+            return 0
+    
+    async def _get_total_completed_count(self, multi_job_id):
+        """Get total count of all completed images (master + workers)."""
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if job_data and 'completed_images' in job_data:
+                return len(job_data['completed_images'])
+            return 0
+    
+    async def _get_all_completed_images(self, multi_job_id):
+        """Get all completed images."""
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if job_data and 'completed_images' in job_data:
+                return job_data['completed_images'].copy()
+            return {}
+    
+    async def _drain_worker_results_queue(self, multi_job_id):
+        """Drain pending worker results from queue and update completed_images. Returns count of drained images."""
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if not job_data or 'queue' not in job_data or 'completed_images' not in job_data:
+                return 0
+            q = job_data['queue']
+            completed_images = job_data['completed_images']
+
+            collected = 0
+            while not q.empty():
+                try:
+                    result = await asyncio.wait_for(q.get(), timeout=0.1)
+                    worker_id = result['worker_id']
+                    is_last = result.get('is_last', False)
+
+                    if 'image_idx' in result and 'image' in result:
+                        image_idx = result['image_idx']
+                        image_pil = result['image']
+                        if image_idx not in completed_images:
+                            completed_images[image_idx] = image_pil
+                            collected += 1
+                            debug_log(f"Drained image {image_idx} from worker {worker_id}")
+
+                    if is_last:
+                        # Optional: track worker completion if needed
+                        pass
+                except asyncio.TimeoutError:
+                    break  # No more immediately available
+
+            if collected > 0:
+                debug_log(f"Drained {collected} worker images during retry")
+            
+            return collected
     
     
     def process_worker_dynamic(self, upscaled_image, model, positive, negative, vae,
