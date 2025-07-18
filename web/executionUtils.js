@@ -90,7 +90,7 @@ export async function executeParallelDistributed(extension, promptWrapper) {
         if (isCloudflareHost && activeWorkers.length > 0) {
             // Try to verify if the cloudflare tunnel is actually up
             try {
-                const testUrl = `${window.location.protocol}//${masterHost}/distributed/status`;
+                const testUrl = `${window.location.protocol}//${masterHost}/prompt`;
                 const response = await fetch(testUrl, {
                     method: 'GET',
                     mode: 'cors',
