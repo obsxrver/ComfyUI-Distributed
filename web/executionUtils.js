@@ -83,6 +83,38 @@ export async function executeParallelDistributed(extension, promptWrapper) {
         
         extension.log(`Pre-flight check: ${activeWorkers.length} of ${enabledWorkers.length} workers are active`, "debug");
         
+        // Check if master host might be unreachable by workers (cloudflare tunnel down)
+        const masterHost = extension.config?.master?.host || '';
+        const isCloudflareHost = /\.(trycloudflare\.com|cloudflare\.dev)$/i.test(masterHost);
+        
+        if (isCloudflareHost && activeWorkers.length > 0) {
+            // Try to verify if the cloudflare tunnel is actually up
+            try {
+                const testUrl = `${window.location.protocol}//${masterHost}/distributed/status`;
+                const response = await fetch(testUrl, {
+                    method: 'GET',
+                    mode: 'cors',
+                    cache: 'no-cache',
+                    signal: AbortSignal.timeout(3000) // 3 second timeout
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Master not reachable');
+                }
+            } catch (error) {
+                // Cloudflare tunnel appears to be down
+                extension.log(`Master host ${masterHost} is not reachable - cloudflare tunnel may be down`, "error");
+                
+                if (extension.ui?.showCloudflareWarning) {
+                    extension.ui.showCloudflareWarning(extension, masterHost);
+                }
+                
+                // Stop execution - workers won't be able to send results back
+                extension.log("Blocking execution - workers cannot reach master at cloudflare domain", "error");
+                return null; // This will prevent the workflow from running
+            }
+        }
+        
         // Find all distributed nodes in the workflow
         const collectorNodes = findNodesByClass(promptWrapper.output, "DistributedCollector");
         const upscaleNodes = findNodesByClass(promptWrapper.output, "UltimateSDUpscaleDistributed");
