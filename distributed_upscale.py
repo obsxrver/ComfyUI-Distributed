@@ -39,6 +39,9 @@ MAX_BATCH = int(os.environ.get('COMFYUI_MAX_BATCH', '20'))
 # Configure maximum payload size (50MB default, configurable via environment variable)
 MAX_PAYLOAD_SIZE = int(os.environ.get('COMFYUI_MAX_PAYLOAD_SIZE', str(50 * 1024 * 1024)))
 
+# Heartbeat timeout in seconds (configurable via env var, default 120s to cover typical image processing)
+HEARTBEAT_TIMEOUT = int(os.environ.get('COMFYUI_HEARTBEAT_TIMEOUT', '120'))
+
 # Helper functions for shallow copying conditioning without duplicating models
 def clone_control_chain(control, clone_hint=True):
     """Shallow copy the ControlNet chain, optionally cloning hints but sharing models."""
@@ -715,7 +718,7 @@ class UltimateSDUpscaleDistributed:
                             job_data_check = prompt_server.distributed_pending_tile_jobs[multi_job_id]
                             # Check for timed out workers (60 second timeout)
                             for worker, last_heartbeat in list(job_data_check.get('worker_status', {}).items()):
-                                if current_time - last_heartbeat > 30:
+                                if current_time - last_heartbeat > HEARTBEAT_TIMEOUT:
                                     log(f"UltimateSDUpscale Master Dynamic - Worker {worker} timed out")
                                     # Requeue assigned images from this worker
                                     for idx in job_data_check.get('assigned_to_workers', {}).get(worker, []):
@@ -1420,7 +1423,7 @@ class UltimateSDUpscaleDistributed:
             
             # Check for timed out workers (60 second timeout)
             for worker, last_heartbeat in list(job_data.get('worker_status', {}).items()):
-                if current_time - last_heartbeat > 30:
+                if current_time - last_heartbeat > HEARTBEAT_TIMEOUT:
                     log(f"Worker {worker} timed out")
                     # Requeue assigned images from this worker
                     for idx in job_data.get('assigned_to_workers', {}).get(worker, []):
@@ -1522,6 +1525,10 @@ class UltimateSDUpscaleDistributed:
                         model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
                         sampler_name, scheduler, denoise, tile_width, tile_height,
                         padding, mask_blur, width, height, tiled_decode, batch_idx=image_idx
+                    )
+                    run_async_in_server_loop(
+                        self._send_heartbeat_to_master(multi_job_id, master_url, worker_id),
+                        timeout=5.0
                     )
                 
                 # Send processed image back to master
