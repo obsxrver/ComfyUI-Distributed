@@ -1895,6 +1895,7 @@ class DistributedCollectorNode:
                         workers_done.add(worker_id)
                         p.update(1)  # +1 per completed worker
                     else:
+                        pass  # Continue waiting for more results
                     
                 except asyncio.TimeoutError:
                     missing_workers = set(str(w) for w in enabled_workers) - workers_done
