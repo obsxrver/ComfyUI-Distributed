@@ -29,6 +29,9 @@ class DistributedExtension {
         
         // Initialize status check timeout reference
         this.statusCheckTimeout = null;
+        
+        // Initialize abort controller for status checks
+        this.statusCheckAbortController = null;
 
         // Inject CSS for pulsing animation
         this.injectStyles();
@@ -36,7 +39,8 @@ class DistributedExtension {
         this.loadConfig().then(async () => {
             this.registerSidebarTab();
             this.setupInterceptor();
-            this.startStatusChecking();
+            // Don't start polling until panel opens
+            // this.startStatusChecking();
             this.loadManagedWorkers();
             // Detect master IP after everything is set up
             this.detectMasterIP();
@@ -177,8 +181,40 @@ class DistributedExtension {
             title: "Distributed",
             tooltip: "Distributed Control Panel",
             type: "custom",
-            render: (el) => renderSidebarContent(this, el)
+            render: (el) => {
+                this.panelElement = el;
+                this.onPanelOpen();
+                return renderSidebarContent(this, el);
+            },
+            destroy: () => {
+                this.onPanelClose();
+            }
         });
+    }
+    
+    onPanelOpen() {
+        this.log("Panel opened - starting status polling", "debug");
+        if (!this.statusCheckTimeout) {
+            this.checkAllWorkerStatuses();
+        }
+    }
+    
+    onPanelClose() {
+        this.log("Panel closed - stopping status polling", "debug");
+        
+        // Cancel any pending status checks
+        if (this.statusCheckAbortController) {
+            this.statusCheckAbortController.abort();
+            this.statusCheckAbortController = null;
+        }
+        
+        // Clear the timeout
+        if (this.statusCheckTimeout) {
+            clearTimeout(this.statusCheckTimeout);
+            this.statusCheckTimeout = null;
+        }
+        
+        this.panelElement = null;
     }
 
     updateSummary() {
@@ -213,6 +249,13 @@ class DistributedExtension {
     }
 
     async checkAllWorkerStatuses() {
+        // Don't continue if panel is closed
+        if (!this.panelElement) return;
+        
+        // Create new abort controller for this round of checks
+        this.statusCheckAbortController = new AbortController();
+        
+        
         // Check master status
         this.checkMasterStatus();
         
@@ -322,10 +365,16 @@ class DistributedExtension {
         const statusDot = document.getElementById(`status-${worker.id}`);
         
         try {
+            // Combine timeout with abort controller signal
+            const timeoutSignal = AbortSignal.timeout(TIMEOUTS.STATUS_CHECK);
+            const signal = this.statusCheckAbortController 
+                ? AbortSignal.any([timeoutSignal, this.statusCheckAbortController.signal])
+                : timeoutSignal;
+            
             const response = await fetch(url, {
                 method: 'GET',
                 mode: 'cors',
-                signal: AbortSignal.timeout(TIMEOUTS.STATUS_CHECK)
+                signal: signal
             });
             
             if (response.ok) {
@@ -361,6 +410,11 @@ class DistributedExtension {
                 throw new Error(`HTTP ${response.status}`);
             }
         } catch (error) {
+            // Don't process aborted requests
+            if (error.name === 'AbortError') {
+                return;
+            }
+            
             // Worker is offline or unreachable
             this.state.setWorkerStatus(worker.id, {
                 online: false,
