@@ -1214,6 +1214,9 @@ class UltimateSDUpscaleDistributed:
                         sampler_name, scheduler, denoise, tile_width, tile_height,
                         padding, mask_blur, width, height, tiled_decode, batch_idx=image_idx
                     )
+                    
+                    # Yield after each tile to minimize worker downtime
+                    run_async_in_server_loop(self._async_yield(), timeout=0.1)
                     # Note: No per-tile drain here – that's what makes this "per-image"
                 
                 result_images[image_idx] = local_image
@@ -1239,18 +1242,24 @@ class UltimateSDUpscaleDistributed:
                     timeout=1.0
                 )
                 log(f"Progress: {completed_now}/{batch_size} images completed")
+                
+                # Yield to allow workers to get new images after completing one
+                run_async_in_server_loop(self._async_yield(), timeout=0.1)
             else:
                 # Queue empty: collect any queued worker results to update progress
                 drained_count = run_async_in_server_loop(
                     self._drain_worker_results_queue(multi_job_id),
                     timeout=5.0
                 )
+                run_async_in_server_loop(self._async_yield(), timeout=0.1)  # Yield after drain
                 
                 # Check for timed out workers and requeue their images
                 requeued_count = run_async_in_server_loop(
                     self._check_and_requeue_timed_out_workers(multi_job_id, batch_size),
                     timeout=5.0
                 )
+                run_async_in_server_loop(self._async_yield(), timeout=0.1)  # Yield after requeue
+                
                 if requeued_count > 0:
                     log(f"Requeued {requeued_count} images from timed out workers")
                     consecutive_retries = 0  # Reset since we have work to do
@@ -1267,6 +1276,8 @@ class UltimateSDUpscaleDistributed:
                 if completed_now >= batch_size:
                     break
 
+                run_async_in_server_loop(self._async_yield(), timeout=0.1)  # Yield before pending check
+                
                 # Check if there are pending images in the queue (could be requeued)
                 pending_count = run_async_in_server_loop(
                     self._get_pending_count(multi_job_id),
@@ -1283,7 +1294,8 @@ class UltimateSDUpscaleDistributed:
                     break  # Force exit to collection phase
 
                 debug_log("Waiting for workers")
-                time.sleep(2)
+                # Use async sleep to allow event loop to process worker requests
+                run_async_in_server_loop(asyncio.sleep(2), timeout=3.0)
         
         debug_log(f"Master processed {processed_count} images locally")
         
@@ -1320,6 +1332,10 @@ class UltimateSDUpscaleDistributed:
         log(f"Completed processing all {batch_size} images")
         return (result_tensor,)
     
+    
+    async def _async_yield(self):
+        """Simple async yield to allow event loop processing."""
+        await asyncio.sleep(0)
     
     async def _get_next_image_index(self, multi_job_id):
         """Get next image index from pending queue for master."""
