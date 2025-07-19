@@ -419,11 +419,20 @@ export class DistributedUI {
                     host: "" 
                 });
                 
+                // Clear the local config host so detectMasterIP() doesn't skip
+                if (extension.config?.master) {
+                    extension.config.master.host = "";
+                }
+                
                 // The API call above doesn't trigger auto-detection, so we need to do it
                 await extension.detectMasterIP();
                 
                 // Reload config to get the new detected IP
                 await extension.loadConfig();
+                
+                // Log the new master URL for debugging
+                const newMasterUrl = extension.getMasterUrl();
+                extension.log(`Master host reset. New URL: ${newMasterUrl}`, "info");
                 
                 // Update UI if sidebar is open
                 if (extension.panelElement) {
@@ -433,11 +442,11 @@ export class DistributedUI {
                     }
                 }
                 
-                // Show success message
+                // Show success message with the actual URL that will be used
                 extension.app.extensionManager.toast.add({
                     severity: "success",
                     summary: "Master Host Reset",
-                    detail: `IP auto-detected: ${extension.config?.master?.host || 'detecting...'}`,
+                    detail: `New address: ${newMasterUrl}`,
                     life: 4000
                 });
                 

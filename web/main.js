@@ -990,15 +990,9 @@ class DistributedExtension {
                 // Save the detected IP (pass true to suppress notification)
                 await this.api.updateMaster({ host: data.recommended_ip });
                 
-                // Show a single combined notification
-                if (app.extensionManager?.toast) {
-                    app.extensionManager.toast.add({
-                        severity: "info",
-                        summary: "Master IP Auto-Detected",
-                        detail: `Master IP set to ${data.recommended_ip} for remote worker communication`,
-                        life: 5000
-                    });
-                }
+                // Update local config immediately
+                if (!this.config.master) this.config.master = {};
+                this.config.master.host = data.recommended_ip;
             }
         } catch (error) {
             this.log("Error detecting master IP: " + error.message, "error");
