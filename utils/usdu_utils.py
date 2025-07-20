@@ -4,11 +4,26 @@ import torch
 import torch.nn.functional as F
 from torchvision.transforms import GaussianBlur
 import math
+import copy
+import asyncio
+import json
+import io
+import time
+import os
+import server
+from aiohttp import web
+
+# Import other utilities from the same package
+from .logging import debug_log, log
+from .network import handle_api_error
 
 if (not hasattr(Image, 'Resampling')):  # For older versions of Pillow
     Image.Resampling = Image
 
 BLUR_KERNEL_SIZE = 15
+
+# Configure maximum payload size (50MB default, configurable via environment variable)
+MAX_PAYLOAD_SIZE = int(os.environ.get('COMFYUI_MAX_PAYLOAD_SIZE', str(50 * 1024 * 1024)))
 
 
 def tensor_to_pil(img_tensor, batch_index=0):
@@ -453,3 +468,399 @@ def crop_cond(cond, region, init_size, canvas_size, tile_size, w_pad=0, h_pad=0)
         crop_mask(cond_dict, region, init_size, canvas_size, tile_size, w_pad, h_pad)
         cropped.append(n)
     return cropped
+
+
+# Helper functions for shallow copying conditioning without duplicating models
+def clone_control_chain(control, clone_hint=True):
+    """Shallow copy the ControlNet chain, optionally cloning hints but sharing models."""
+    if control is None:
+        return None
+    new_control = copy.copy(control)  # Shallow copy (shares model)
+    if clone_hint and hasattr(control, 'cond_hint_original'):
+        new_control.cond_hint_original = control.cond_hint_original.clone()
+    if hasattr(control, 'previous_controlnet'):
+        new_control.previous_controlnet = clone_control_chain(control.previous_controlnet, clone_hint)
+    return new_control
+
+def clone_conditioning(cond_list, clone_hints=True):
+    """Clone conditioning without duplicating ControlNet models."""
+    new_cond = []
+    for emb, cond_dict in cond_list:
+        new_emb = emb.clone() if emb is not None else None
+        new_dict = cond_dict.copy()
+        if 'control' in new_dict:
+            new_dict['control'] = clone_control_chain(new_dict['control'], clone_hints)
+        if 'mask' in new_dict:
+            new_dict['mask'] = new_dict['mask'].clone()
+        # Handle other potential fields if needed
+        if 'pooled_output' in new_dict:
+            new_dict['pooled_output'] = new_dict['pooled_output'].clone()
+        if 'area' in new_dict:
+            new_dict['area'] = new_dict['area'][:]  # Shallow copy list/tuple
+        new_cond.append([new_emb, new_dict])
+    return new_cond
+
+# Helper function to ensure persistent state is initialized
+def ensure_tile_jobs_initialized():
+    """Ensure tile job storage is initialized on the server instance."""
+    prompt_server = server.PromptServer.instance
+    if not hasattr(prompt_server, 'distributed_pending_tile_jobs'):
+        debug_log("Initializing persistent tile job queue on server instance.")
+        prompt_server.distributed_pending_tile_jobs = {}
+        prompt_server.distributed_tile_jobs_lock = asyncio.Lock()
+    else:
+        # Clean up any legacy queue structures that don't have the 'mode' field
+        # (Should be rare after fixes, but keep for safety)
+        to_remove = [job_id for job_id, job_data in prompt_server.distributed_pending_tile_jobs.items()
+                     if not isinstance(job_data, dict) or 'mode' not in job_data]
+        for job_id in to_remove:
+            debug_log(f"Removing legacy queue structure for job {job_id}")
+            del prompt_server.distributed_pending_tile_jobs[job_id]
+    return prompt_server
+
+# API Endpoint for tile completion
+@server.PromptServer.instance.routes.post("/distributed/request_image")
+async def request_image_endpoint(request):
+    """Endpoint for workers to request images in dynamic mode."""
+    try:
+        data = await request.json()
+        worker_id = data.get('worker_id')
+        multi_job_id = data.get('multi_job_id')
+        
+        if not worker_id or not multi_job_id:
+            return await handle_api_error(request, "Missing worker_id or multi_job_id", 400)
+        
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            if multi_job_id in prompt_server.distributed_pending_tile_jobs:
+                job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
+                if not isinstance(job_data, dict) or 'mode' not in job_data:
+                    return await handle_api_error(request, "Invalid job data structure", 500)
+                if job_data['mode'] != 'dynamic':
+                    return await handle_api_error(request, f"Mode mismatch: expected dynamic, got {job_data['mode']}", 400)
+                if 'pending_images' in job_data:
+                    pending_queue = job_data['pending_images']
+                    try:
+                        image_idx = await asyncio.wait_for(pending_queue.get(), timeout=0.1)
+                        # Track assigned image
+                        if 'assigned_to_workers' in job_data and worker_id in job_data['assigned_to_workers']:
+                            job_data['assigned_to_workers'][worker_id].append(image_idx)
+                        # Update worker heartbeat
+                        if 'worker_status' in job_data:
+                            job_data['worker_status'][worker_id] = time.time()
+                        # Get estimated remaining count
+                        remaining = pending_queue.qsize()  # Approximate
+                        debug_log(f"UltimateSDUpscale API - Assigned image {image_idx} to worker {worker_id}")
+                        return web.json_response({"image_idx": image_idx, "estimated_remaining": remaining})
+                    except asyncio.TimeoutError:
+                        return web.json_response({"image_idx": None})
+                else:
+                    return await handle_api_error(request, "Invalid dynamic mode configuration", 400)
+            else:
+                return await handle_api_error(request, "Job not found", 404)
+    except Exception as e:
+        return await handle_api_error(request, e, 500)
+
+@server.PromptServer.instance.routes.get("/distributed/job_status")
+async def job_status_endpoint(request):
+    """Endpoint to check if a job is ready."""
+    multi_job_id = request.query.get('multi_job_id')
+    if not multi_job_id:
+        return web.json_response({"ready": False})
+    prompt_server = ensure_tile_jobs_initialized()
+    async with prompt_server.distributed_tile_jobs_lock:
+        job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+        ready = bool(job_data and isinstance(job_data, dict) and 'queue' in job_data)
+        return web.json_response({"ready": ready})
+
+@server.PromptServer.instance.routes.post("/distributed/heartbeat")
+async def heartbeat_endpoint(request):
+    """Endpoint for workers to send heartbeat signals."""
+    try:
+        data = await request.json()
+        worker_id = data.get('worker_id')
+        multi_job_id = data.get('multi_job_id')
+        
+        if not worker_id or not multi_job_id:
+            return await handle_api_error(request, "Missing worker_id or multi_job_id", 400)
+        
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            if multi_job_id in prompt_server.distributed_pending_tile_jobs:
+                job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
+                if 'worker_status' in job_data:
+                    job_data['worker_status'][worker_id] = time.time()
+                    debug_log(f"UltimateSDUpscale API - Heartbeat from worker {worker_id}")
+                    return web.json_response({"status": "success"})
+                else:
+                    return await handle_api_error(request, "Worker status tracking not available", 400)
+            else:
+                return await handle_api_error(request, "Job not found", 404)
+    except Exception as e:
+        return await handle_api_error(request, e, 500)
+
+@server.PromptServer.instance.routes.post("/distributed/tile_complete")
+async def tile_complete_endpoint(request):
+    """Endpoint for receiving completed tiles from workers."""
+    try:
+        # Check payload size before processing
+        content_length = request.headers.get('content-length')
+        if content_length and int(content_length) > MAX_PAYLOAD_SIZE:
+            return await handle_api_error(request, f"Payload too large: {content_length} bytes (max: {MAX_PAYLOAD_SIZE})", 413)
+        
+        data = await request.post()
+        multi_job_id = data.get('multi_job_id')
+        worker_id = data.get('worker_id')
+        is_last = data.get('is_last', 'False').lower() == 'true'
+        
+        if multi_job_id is None or worker_id is None:
+            return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
+
+        prompt_server = ensure_tile_jobs_initialized()
+        
+        # Check if this is a full image submission (dynamic mode)
+        if 'full_image' in data and 'image_idx' in data:
+            image_idx = int(data.get('image_idx'))
+            is_last = data.get('is_last', 'False').lower() == 'true'
+            
+            try:
+                # Process full image
+                img_data = data['full_image'].file.read()
+                img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                
+                debug_log(f"UltimateSDUpscale API - Received full image {image_idx} from worker {worker_id}")
+                
+                # Put into dynamic mode queue
+                async with prompt_server.distributed_tile_jobs_lock:
+                    if multi_job_id in prompt_server.distributed_pending_tile_jobs:
+                        job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
+                        if not isinstance(job_data, dict) or 'mode' not in job_data:
+                            return await handle_api_error(request, "Invalid job data structure", 500)
+                        if job_data['mode'] != 'dynamic':
+                            return await handle_api_error(request, f"Mode mismatch: expected dynamic, got {job_data['mode']}", 400)
+                        # Check for duplicate image submission
+                        if 'completed_images' in job_data and image_idx in job_data['completed_images']:
+                            log(f"UltimateSDUpscale API - Duplicate image {image_idx} from {worker_id}, ignoring")
+                            return web.json_response({"status": "duplicate"})
+                        if 'queue' in job_data:
+                            await job_data['queue'].put({
+                                'worker_id': worker_id,
+                                'image_idx': image_idx,
+                                'image': img,
+                                'is_last': is_last
+                            })
+                            return web.json_response({"status": "success"})
+                        else:
+                            return await handle_api_error(request, "Invalid dynamic mode configuration", 400)
+                    else:
+                        return await handle_api_error(request, "Job not found", 404)
+            except Exception as e:
+                log(f"Error processing full image from worker {worker_id}: {e}")
+                return await handle_api_error(request, f"Image processing error: {e}", 400)
+        
+        # Check for batch mode
+        batch_size = int(data.get('batch_size', 0))
+        tiles = []
+        
+        # Handle completion signals (batch_size=0 with is_last=True)
+        if batch_size == 0 and is_last:
+            async with prompt_server.distributed_tile_jobs_lock:
+                if multi_job_id in prompt_server.distributed_pending_tile_jobs:
+                    job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
+                    if isinstance(job_data, dict) and 'queue' in job_data:
+                        await job_data['queue'].put({
+                            'worker_id': worker_id,
+                            'is_last': True,
+                            'tiles': []
+                        })
+                        debug_log(f"Received completion signal from worker {worker_id}")
+                        return web.json_response({"status": "success"})
+                    else:
+                        return await handle_api_error(request, "Invalid job structure", 500)
+                else:
+                    return await handle_api_error(request, "Job not found", 404)
+        
+        if batch_size > 0:
+            # Batch mode: Extract multiple tiles
+            padding = int(data.get('padding', 32))
+            debug_log(f"UltimateSDUpscale - tile_complete batch - job_id: {multi_job_id}, worker: {worker_id}, batch_size: {batch_size}")
+            
+            # Check for JSON metadata
+            metadata_field = data.get('tiles_metadata')
+            if metadata_field:
+                # New JSON metadata format
+                try:
+                    # Handle different types of metadata field
+                    if hasattr(metadata_field, 'file'):
+                        # File-like object
+                        metadata_str = metadata_field.file.read().decode('utf-8')
+                    elif isinstance(metadata_field, (bytes, bytearray)):
+                        # Direct bytes/bytearray
+                        metadata_str = metadata_field.decode('utf-8')
+                    else:
+                        # String
+                        metadata_str = str(metadata_field)
+                    
+                    metadata = json.loads(metadata_str)
+                    if len(metadata) != batch_size:
+                        return await handle_api_error(request, "Metadata length mismatch", 400)
+                    
+                    tile_data_list = []  # Temporary list to collect and sort tiles
+                    
+                    for i in range(batch_size):
+                        tile_field = data.get(f'tile_{i}')
+                        if tile_field is None:
+                            log(f"Missing tile_{i} from worker {worker_id}, skipping")
+                            continue
+                        
+                        try:
+                            # Process image
+                            img_data = tile_field.file.read()
+                            img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                            img_np = np.array(img).astype(np.float32) / 255.0
+                            tensor = torch.from_numpy(img_np)[None,]
+                            
+                            # Get metadata for this tile
+                            if i < len(metadata):
+                                tile_data = metadata[i]
+                                tile_idx = tile_data.get('tile_idx', i)
+                                
+                                tile_info = {
+                                    'tensor': tensor,
+                                    'tile_idx': tile_idx,
+                                    'x': tile_data['x'],
+                                    'y': tile_data['y'],
+                                    'extracted_width': tile_data['extracted_width'],
+                                    'extracted_height': tile_data['extracted_height'],
+                                    'padding': padding,
+                                    'batch_idx': tile_data.get('batch_idx', 0),
+                                    'global_idx': tile_data.get('global_idx', tile_idx)
+                                }
+                                tile_data_list.append(tile_info)
+                            else:
+                                log(f"Missing metadata for tile {i} from worker {worker_id}, skipping")
+                                continue
+                                
+                        except Exception as e:
+                            log(f"Error processing tile {i} from worker {worker_id}: {e}, skipping this tile")
+                            continue
+                    
+                    # Sort tiles by tile_idx to ensure correct order
+                    tile_data_list.sort(key=lambda x: x['tile_idx'])
+                    tiles.extend(tile_data_list)
+                    
+                    if tile_data_list:
+                        debug_log(f"Reordered {len(tile_data_list)} tiles based on tile_idx")
+                except Exception as e:
+                    log(f"Error processing JSON metadata from worker {worker_id}: {e}")
+                    return await handle_api_error(request, f"Metadata processing error: {e}", 400)
+            else:
+                # Legacy format: individual fields per tile (backward compatibility)
+                debug_log(f"WARNING: Worker {worker_id} using legacy field format. Please update to use JSON metadata.")
+                
+                for i in range(batch_size):
+                    tile_field = data.get(f'tile_{i}')
+                    if tile_field is None:
+                        log(f"Missing tile_{i} from worker {worker_id}, skipping")
+                        continue
+                    
+                    # Get metadata for this tile
+                    tile_idx = int(data.get(f'tile_{i}_idx', i))
+                    x = int(data.get(f'tile_{i}_x', 0))
+                    y = int(data.get(f'tile_{i}_y', 0))
+                    extracted_width = int(data.get(f'tile_{i}_width', 512))
+                    extracted_height = int(data.get(f'tile_{i}_height', 512))
+                    
+                    try:
+                        # Process image
+                        img_data = tile_field.file.read()
+                        img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                        img_np = np.array(img).astype(np.float32) / 255.0
+                        tensor = torch.from_numpy(img_np)[None,]
+                        
+                        tiles.append({
+                            'tensor': tensor,
+                            'tile_idx': tile_idx,
+                            'x': x,
+                            'y': y,
+                            'extracted_width': extracted_width,
+                            'extracted_height': extracted_height,
+                            'padding': padding
+                        })
+                    except Exception as e:
+                        log(f"Error processing tile {i} from worker {worker_id}: {e}, skipping this tile")
+                        continue
+        else:
+            # Single tile mode (backward compatibility)
+            image_file = data.get('image')
+            if not image_file:
+                return await handle_api_error(request, "Missing image data", 400)
+                
+            tile_idx = int(data.get('tile_idx', 0))
+            x = int(data.get('x', 0))
+            y = int(data.get('y', 0))
+            extracted_width = int(data.get('extracted_width', 512))
+            extracted_height = int(data.get('extracted_height', 512))
+            padding = int(data.get('padding', 32))
+            
+            debug_log(f"UltimateSDUpscale - tile_complete single - job_id: {multi_job_id}, worker: {worker_id}, tile: {tile_idx}")
+            
+            try:
+                # Process image
+                img_data = image_file.file.read()
+                img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                img_np = np.array(img).astype(np.float32) / 255.0
+                tensor = torch.from_numpy(img_np)[None,]
+                
+                tiles = [{
+                    'tensor': tensor,
+                    'tile_idx': tile_idx,
+                    'x': x,
+                    'y': y,
+                    'extracted_width': extracted_width,
+                    'extracted_height': extracted_height,
+                    'padding': padding,
+                    'batch_idx': 0,  # Default for legacy single-tile
+                    'global_idx': tile_idx  # Default for legacy single-tile
+                }]
+            except Exception as e:
+                log(f"Error processing tile from worker {worker_id}: {e}")
+                return await handle_api_error(request, f"Tile processing error: {e}", 400)
+
+        # Put tiles into queue
+        async with prompt_server.distributed_tile_jobs_lock:
+            if multi_job_id in prompt_server.distributed_pending_tile_jobs:
+                job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
+                if not isinstance(job_data, dict) or 'mode' not in job_data:
+                    return await handle_api_error(request, "Invalid job data structure", 500)
+                if job_data['mode'] != 'static':
+                    return await handle_api_error(request, f"Mode mismatch: expected static, got {job_data['mode']}", 400)
+                
+                q = job_data['queue']
+                if batch_size > 0:
+                    # Put batch as single item  
+                    await q.put({
+                        'worker_id': worker_id,
+                        'tiles': tiles,
+                        'is_last': is_last
+                    })
+                else:
+                    # Put single tile (backward compat)
+                    tile_data = tiles[0]
+                    await q.put({
+                        'tensor': tile_data['tensor'],
+                        'worker_id': worker_id,
+                        'tile_idx': tile_data['tile_idx'],
+                        'x': tile_data['x'],
+                        'y': tile_data['y'],
+                        'extracted_width': tile_data['extracted_width'],
+                        'extracted_height': tile_data['extracted_height'],
+                        'padding': tile_data['padding'],
+                        'is_last': is_last
+                    })
+                    
+                return web.json_response({"status": "success"})
+            else:
+                return await handle_api_error(request, "Job not found or already complete", 404)
+    except Exception as e:
+        return await handle_api_error(request, e, 500)
