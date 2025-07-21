@@ -611,6 +611,79 @@ async def get_managed_workers_endpoint(request):
         return await handle_api_error(request, e, 500)
 
 
+@server.PromptServer.instance.routes.get("/distributed/local-worker-status")
+async def get_local_worker_status_endpoint(request):
+    """Check status of all local workers (localhost/no host specified)."""
+    try:
+        config = load_config()
+        worker_statuses = {}
+        
+        for worker in config.get("workers", []):
+            # Only check local workers
+            if not worker.get("host") or worker.get("host") in ["localhost", "127.0.0.1"]:
+                worker_id = worker["id"]
+                port = worker["port"]
+                
+                # Check if worker is enabled
+                if not worker.get("enabled", False):
+                    worker_statuses[worker_id] = {
+                        "online": False,
+                        "enabled": False,
+                        "processing": False,
+                        "queue_count": 0
+                    }
+                    continue
+                
+                # Try to connect to worker
+                try:
+                    session = await get_client_session()
+                    async with session.get(
+                        f"http://localhost:{port}/prompt",
+                        timeout=aiohttp.ClientTimeout(total=2)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            queue_remaining = data.get("exec_info", {}).get("queue_remaining", 0)
+                            worker_statuses[worker_id] = {
+                                "online": True,
+                                "enabled": True,
+                                "processing": queue_remaining > 0,
+                                "queue_count": queue_remaining
+                            }
+                        else:
+                            worker_statuses[worker_id] = {
+                                "online": False,
+                                "enabled": True,
+                                "processing": False,
+                                "queue_count": 0,
+                                "error": f"HTTP {resp.status}"
+                            }
+                except asyncio.TimeoutError:
+                    worker_statuses[worker_id] = {
+                        "online": False,
+                        "enabled": True,
+                        "processing": False,
+                        "queue_count": 0,
+                        "error": "Timeout"
+                    }
+                except Exception as e:
+                    worker_statuses[worker_id] = {
+                        "online": False,
+                        "enabled": True,
+                        "processing": False,
+                        "queue_count": 0,
+                        "error": str(e)
+                    }
+        
+        return web.json_response({
+            "status": "success",
+            "worker_statuses": worker_statuses
+        })
+    except Exception as e:
+        debug_log(f"Error checking local worker status: {e}")
+        return await handle_api_error(request, e, 500)
+
+
 @server.PromptServer.instance.routes.get("/distributed/worker_log/{worker_id}")
 async def get_worker_log_endpoint(request):
     """Get log content for a specific worker."""

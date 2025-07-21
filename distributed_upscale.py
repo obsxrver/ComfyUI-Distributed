@@ -12,9 +12,11 @@ import math
 import os
 import time
 from typing import List, Tuple
+from functools import wraps
 
 # Import ComfyUI modules
 import comfy.samplers
+import comfy.model_management
 
 # Import shared utilities
 from .utils.logging import debug_log, log
@@ -24,18 +26,38 @@ from .utils.network import get_server_port, get_server_loop, get_client_session,
 from .utils.async_helpers import run_async_in_server_loop
 from .utils.constants import (
     TILE_COLLECTION_TIMEOUT, TILE_WAIT_TIMEOUT, TILE_TRANSFER_TIMEOUT,
-    QUEUE_INIT_TIMEOUT, TILE_SEND_TIMEOUT
+    QUEUE_INIT_TIMEOUT, TILE_SEND_TIMEOUT, MAX_BATCH, HEARTBEAT_TIMEOUT
 )
 
 # Import for controller support
-from .utils.usdu_utils import crop_cond, clone_control_chain, clone_conditioning, ensure_tile_jobs_initialized
+from .utils.usdu_utils import crop_cond
+from .utils.usdu_managment import (
+    clone_conditioning, ensure_tile_jobs_initialized,
+    # Job management functions
+    _init_job_queue, _distribute_tasks, _get_next_task, _drain_results_queue,
+    _check_and_requeue_timed_out_workers, _get_completed_count, _mark_task_completed,
+    _send_heartbeat_to_master, _cleanup_job,
+    # Constants
+    JOB_COMPLETED_TASKS, JOB_WORKER_STATUS, JOB_PENDING_TASKS
+)
 
 
-# Make MAX_BATCH configurable
-MAX_BATCH = int(os.environ.get('COMFYUI_MAX_BATCH', '20'))
+# Note: MAX_BATCH and HEARTBEAT_TIMEOUT are imported from utils.constants
+# They can be overridden via environment variables:
+# - COMFYUI_MAX_BATCH (default: 20)
+# - COMFYUI_HEARTBEAT_TIMEOUT (default: 120)
 
-# Heartbeat timeout in seconds (configurable via env var, default 120s to cover typical image processing)
-HEARTBEAT_TIMEOUT = int(os.environ.get('COMFYUI_HEARTBEAT_TIMEOUT', '120'))
+# Sync wrapper decorator for async methods
+def sync_wrapper(async_func):
+    """Decorator to wrap async methods for synchronous execution."""
+    @wraps(async_func)
+    def sync_func(self, *args, **kwargs):
+        # Use run_async_in_server_loop for ComfyUI compatibility
+        return run_async_in_server_loop(
+            async_func(self, *args, **kwargs),
+            timeout=600.0  # 10 minute timeout for long operations
+        )
+    return sync_func
 
 # Note: tensor_to_pil and pil_to_tensor are imported from utils.image
 
@@ -123,11 +145,11 @@ class UltimateSDUpscaleDistributed:
         
         if is_worker:
             # Worker mode: process tiles synchronously
-            return self.process_worker_tiles(upscaled_image, model, positive, negative, vae,
-                                           seed, steps, cfg, sampler_name, scheduler, denoise,
-                                           tile_width, tile_height, padding, mask_blur,
-                                           force_uniform_tiles, tiled_decode, multi_job_id, master_url,
-                                           worker_id, enabled_worker_ids, dynamic_threshold)
+            return self.process_worker(upscaled_image, model, positive, negative, vae,
+                                      seed, steps, cfg, sampler_name, scheduler, denoise,
+                                      tile_width, tile_height, padding, mask_blur,
+                                      force_uniform_tiles, tiled_decode, multi_job_id, master_url,
+                                      worker_id, enabled_worker_ids, dynamic_threshold)
         else:
             # Master mode: distribute and collect synchronously
             return self.process_master(upscaled_image, model, positive, negative, vae,
@@ -135,12 +157,12 @@ class UltimateSDUpscaleDistributed:
                                      tile_width, tile_height, padding, mask_blur,
                                      force_uniform_tiles, tiled_decode, multi_job_id, enabled_worker_ids, dynamic_threshold)
     
-    def process_worker_tiles(self, upscaled_image, model, positive, negative, vae,
-                           seed, steps, cfg, sampler_name, scheduler, denoise,
-                           tile_width, tile_height, padding, mask_blur,
-                           force_uniform_tiles, tiled_decode, multi_job_id, master_url,
-                           worker_id, enabled_worker_ids, dynamic_threshold):
-        """Worker processing - determines mode and processes accordingly."""
+    def process_worker(self, upscaled_image, model, positive, negative, vae,
+                      seed, steps, cfg, sampler_name, scheduler, denoise,
+                      tile_width, tile_height, padding, mask_blur,
+                      force_uniform_tiles, tiled_decode, multi_job_id, master_url,
+                      worker_id, enabled_worker_ids, dynamic_threshold):
+        """Unified worker processing - handles both static and dynamic modes."""
         # Get batch size to determine mode
         batch_size = upscaled_image.shape[0]
         
@@ -160,105 +182,18 @@ class UltimateSDUpscaleDistributed:
                                              force_uniform_tiles, tiled_decode, multi_job_id, master_url,
                                              worker_id, enabled_worker_ids, dynamic_threshold)
         
-        # Static mode - continue with existing tile-based processing
-        # Round tile dimensions
-        tile_width = self.round_to_multiple(tile_width)
-        tile_height = self.round_to_multiple(tile_height)
-        
-        # Calculate all tile positions
-        _, height, width, _ = upscaled_image.shape
-        all_tiles = self.calculate_tiles(width, height, tile_width, tile_height, force_uniform_tiles)
-        
-        # Calculate total tiles across all images
-        num_tiles_per_image = len(all_tiles)
-        total_tiles = batch_size * num_tiles_per_image
-        
-        # Get assigned global tile indices for this worker
-        assigned_global_indices = self._get_worker_global_indices(total_tiles, enabled_workers, worker_id)
-        if not assigned_global_indices:
-            return (upscaled_image,)
-        
-        debug_log(f"UltimateSDUpscale Worker - Worker {worker_id} processing {len(assigned_global_indices)} tiles from batch of {batch_size}")
-        
-        # Process tiles SYNCHRONOUSLY
-        processed_tiles = []
-        # Track which batch indices we've already pre-sliced conditioning for
-        sliced_conditioning_cache = {}
-        
-        for global_idx in assigned_global_indices:
-            # Calculate which image and tile this corresponds to
-            batch_idx = global_idx // num_tiles_per_image
-            tile_idx = global_idx % num_tiles_per_image
-            
-            # Skip if batch_idx is out of range
-            if batch_idx >= upscaled_image.shape[0]:
-                debug_log(f"Warning: Calculated batch_idx {batch_idx} exceeds batch size {upscaled_image.shape[0]}")
-                continue
-            
-            # Pre-slice conditioning once per image (cache it)
-            if batch_idx not in sliced_conditioning_cache:
-                positive_sliced = clone_conditioning(positive)
-                negative_sliced = clone_conditioning(negative)
-                for cond_list in [positive_sliced, negative_sliced]:
-                    for i in range(len(cond_list)):
-                        emb, cond_dict = cond_list[i]
-                        if emb.shape[0] > 1:
-                            cond_list[i][0] = emb[batch_idx:batch_idx+1]
-                        if 'control' in cond_dict:
-                            control = cond_dict['control']
-                            while control is not None:
-                                hint = control.cond_hint_original
-                                if hint.shape[0] > 1:
-                                    control.cond_hint_original = hint[batch_idx:batch_idx+1]
-                                control = control.previous_controlnet
-                        if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
-                            cond_dict['mask'] = cond_dict['mask'][batch_idx:batch_idx+1]
-                sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
-            else:
-                positive_sliced, negative_sliced = sliced_conditioning_cache[batch_idx]
-                
-            x, y = all_tiles[tile_idx]
-            
-            # Extract tile from the specific image in the batch
-            tile_tensor, x1, y1, ew, eh = self.extract_tile_with_padding(
-                upscaled_image[batch_idx:batch_idx+1], x, y, tile_width, tile_height, padding
-            )
-            
-            # Process tile through SD with unique seed
-            image_seed = seed + batch_idx * 1000
-            processed_tile = self.process_tile(tile_tensor, model, positive_sliced, negative_sliced, vae,
-                                             image_seed + tile_idx, steps, cfg, sampler_name, 
-                                             scheduler, denoise, tiled_decode, batch_idx=batch_idx,
-                                             region=(x1, y1, x1 + ew, y1 + eh), image_size=(width, height))
-            
-            processed_tiles.append({
-                'tile': processed_tile,
-                'global_idx': global_idx,
-                'batch_idx': batch_idx,
-                'tile_idx': tile_idx,
-                'x': x1,  # Use extraction position
-                'y': y1,
-                'extracted_width': ew,
-                'extracted_height': eh
-            })
-        
-        # Send results back using the server's event loop in a single batch
-        try:
-            run_async_in_server_loop(
-                self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url,
-                                               padding, worker_id),
-                timeout=TILE_SEND_TIMEOUT
-            )
-        except Exception as e:
-            log(f"UltimateSDUpscale Worker - Error sending tiles: {e}")
-        
-        return (upscaled_image,)
+        # Static mode - enhanced with health monitoring and retry logic
+        return self._process_worker_static_sync(upscaled_image, model, positive, negative, vae,
+                                               seed, steps, cfg, sampler_name, scheduler, denoise,
+                                               tile_width, tile_height, padding, mask_blur,
+                                               force_uniform_tiles, tiled_decode, multi_job_id, master_url,
+                                               worker_id, enabled_workers)
     
     def process_master(self, upscaled_image, model, positive, negative, vae,
                       seed, steps, cfg, sampler_name, scheduler, denoise,
                       tile_width, tile_height, padding, mask_blur,
                       force_uniform_tiles, tiled_decode, multi_job_id, enabled_worker_ids, dynamic_threshold):
-        """Master processing - SYNCHRONOUS with async collection."""
+        """Unified master processing with enhanced monitoring and failure handling."""
         # Round tile dimensions
         tile_width = self.round_to_multiple(tile_width)
         tile_height = self.round_to_multiple(tile_height)
@@ -268,9 +203,9 @@ class UltimateSDUpscaleDistributed:
         
         # Calculate all tiles
         all_tiles = self.calculate_tiles(width, height, tile_width, tile_height, force_uniform_tiles)
-        total_tiles = len(all_tiles)
+        num_tiles_per_image = len(all_tiles)
         
-        debug_log(f"UltimateSDUpscale Master - Total tiles: {total_tiles}")
+        debug_log(f"UltimateSDUpscale Master - Tiles per image: {num_tiles_per_image}")
         
         # Parse enabled workers
         enabled_workers = json.loads(enabled_worker_ids)
@@ -294,157 +229,12 @@ class UltimateSDUpscaleDistributed:
                                              tile_width, tile_height, padding, mask_blur,
                                              force_uniform_tiles, tiled_decode, multi_job_id, enabled_workers)
         
-        # Static mode - continue with existing implementation
-        
-        # Initialize job queue FIRST before any processing
-        # Initialize the queue directly in the persistent server storage
-        # This ensures it's accessible from the web server's event loop
-        try:
-            run_async_in_server_loop(
-                self._init_job_queue(multi_job_id),
-                timeout=QUEUE_INIT_TIMEOUT
-            )
-            debug_log(f"UltimateSDUpscale Master - Queue initialization complete")
-        except Exception as e:
-            debug_log(f"UltimateSDUpscale Master - Queue initialization error: {e}")
-            raise RuntimeError(f"Failed to initialize static mode queue: {e}")
-        
-        # Convert batch to PIL list for processing
-        result_images = []
-        for b in range(batch_size):
-            image_pil = tensor_to_pil(upscaled_image[b:b+1], 0)
-            result_images.append(image_pil.copy())
-        
-        # Mask will be created per tile for proper blending
-        
-        # Calculate total tiles across all images
-        num_tiles_per_image = len(all_tiles)
-        total_tiles_all_images = batch_size * num_tiles_per_image
-        
-        # Calculate master's global tile indices 
-        master_global_indices = self._get_master_global_indices(total_tiles_all_images, num_workers)
-        master_tiles = len(master_global_indices)
-        
-        debug_log(f"UltimateSDUpscale Master - Processing {master_tiles} tiles locally from batch of {batch_size}")
-        
-        # Process master tiles SYNCHRONOUSLY
-        # Track which batch indices we've already pre-sliced conditioning for
-        sliced_conditioning_cache = {}
-        
-        for global_idx in master_global_indices:
-            # Calculate which image and tile this corresponds to
-            batch_idx = global_idx // num_tiles_per_image
-            tile_idx = global_idx % num_tiles_per_image
-            
-            # Skip if batch_idx is out of range
-            if batch_idx >= len(result_images):
-                debug_log(f"Warning: Calculated batch_idx {batch_idx} exceeds result_images length {len(result_images)}")
-                continue
-            
-            # Pre-slice conditioning once per image (cache it)
-            if batch_idx not in sliced_conditioning_cache:
-                positive_sliced = clone_conditioning(positive)
-                negative_sliced = clone_conditioning(negative)
-                for cond_list in [positive_sliced, negative_sliced]:
-                    for i in range(len(cond_list)):
-                        emb, cond_dict = cond_list[i]
-                        if emb.shape[0] > 1:
-                            cond_list[i][0] = emb[batch_idx:batch_idx+1]
-                        if 'control' in cond_dict:
-                            control = cond_dict['control']
-                            while control is not None:
-                                hint = control.cond_hint_original
-                                if hint.shape[0] > 1:
-                                    control.cond_hint_original = hint[batch_idx:batch_idx+1]
-                                control = control.previous_controlnet
-                        if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
-                            cond_dict['mask'] = cond_dict['mask'][batch_idx:batch_idx+1]
-                sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
-            else:
-                positive_sliced, negative_sliced = sliced_conditioning_cache[batch_idx]
-                
-            # Use unique seed per image
-            image_seed = seed + batch_idx * 1000
-            
-            result_images[batch_idx] = self._process_and_blend_tile(
-                tile_idx, all_tiles[tile_idx], upscaled_image[batch_idx:batch_idx+1], result_images[batch_idx],
-                model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
-                sampler_name, scheduler, denoise, tile_width, tile_height,
-                padding, mask_blur, width, height, tiled_decode, batch_idx=batch_idx
-            )
-        
-        # Collect worker tiles using async
-        worker_tiles_expected = total_tiles_all_images - master_tiles
-        if worker_tiles_expected > 0:
-            # Calculate tile distribution for active worker calculation
-            tiles_per_participant = total_tiles_all_images // (num_workers + 1)
-            remainder = total_tiles_all_images % (num_workers + 1)
-            
-            # Calculate which workers will actually have tiles
-            active_workers = []
-            for i in range(num_workers):
-                worker_start_idx = master_tiles + (i * tiles_per_participant)
-                if i < remainder - 1:
-                    worker_start_idx += i
-                    worker_tile_count = tiles_per_participant + 1
-                else:
-                    worker_start_idx += remainder - 1 if remainder > 0 else 0
-                    worker_tile_count = tiles_per_participant
-                
-                if worker_start_idx < total_tiles_all_images and worker_tile_count > 0:
-                    active_workers.append(enabled_workers[i])
-            
-            debug_log(f"UltimateSDUpscale Master - Waiting for {worker_tiles_expected} tiles from {len(active_workers)} active workers")
-            debug_log(f"UltimateSDUpscale Master - Active worker IDs: {active_workers}")
-            debug_log(f"UltimateSDUpscale Master - All enabled worker IDs: {enabled_workers}")
-            
-            # Collect tiles from workers using the server's event loop
-            collected_tiles = run_async_in_server_loop(
-                self._async_collect_worker_tiles(multi_job_id, len(active_workers)),
-                timeout=TILE_COLLECTION_TIMEOUT
-            )
-            
-            # Blend collected tiles SYNCHRONOUSLY
-            for tile_data in collected_tiles.values():
-                    x = tile_data['x']
-                    y = tile_data['y']
-                    tile_tensor = tile_data['tensor']
-                    tile_idx = tile_data['tile_idx']
-                    extracted_width = tile_data.get('extracted_width', tile_width + 2 * padding)
-                    extracted_height = tile_data.get('extracted_height', tile_height + 2 * padding)
-                    
-                    # Get batch index if available (for batch processing)
-                    batch_idx = tile_data.get('batch_idx', 0)
-                    
-                    # Skip if batch_idx is out of range
-                    if batch_idx >= len(result_images):
-                        debug_log(f"Warning: Received tile for batch_idx {batch_idx} but only have {len(result_images)} images")
-                        continue
-                    
-                    # Convert and blend
-                    tile_pil = tensor_to_pil(tile_tensor, 0)
-                    # Get the original tile position from the tile index
-                    orig_x, orig_y = all_tiles[tile_idx]
-                    # Create mask for this specific tile
-                    tile_mask = self.create_tile_mask(width, height, orig_x, orig_y, tile_width, tile_height, mask_blur)
-                    # Use extraction position and size for blending
-                    result_images[batch_idx] = self.blend_tile(result_images[batch_idx], tile_pil, 
-                                                 x, y, (extracted_width, extracted_height), tile_mask, padding)
-        
-        # Convert back to tensor
-        # For batch processing, combine all result images
-        if batch_size == 1:
-            result_tensor = pil_to_tensor(result_images[0])
-        else:
-            # Convert all images and concatenate
-            result_tensors = [pil_to_tensor(img) for img in result_images]
-            result_tensor = torch.cat(result_tensors, dim=0)
-        
-        if upscaled_image.is_cuda:
-            result_tensor = result_tensor.cuda()
-        
-        debug_log(f"UltimateSDUpscale Master - Job {multi_job_id} complete")
-        return (result_tensor,)
+        # Static mode - enhanced with unified job management
+        return self._process_master_static_sync(upscaled_image, model, positive, negative, vae,
+                                               seed, steps, cfg, sampler_name, scheduler, denoise,
+                                               tile_width, tile_height, padding, mask_blur,
+                                               force_uniform_tiles, tiled_decode, multi_job_id, enabled_workers,
+                                               all_tiles, num_tiles_per_image)
     
     def _get_worker_global_indices(self, total_tiles, enabled_workers, worker_id):
         """Calculate which global tile indices are assigned to a specific worker in flattened mode."""
@@ -459,13 +249,13 @@ class UltimateSDUpscaleDistributed:
             return []
         
         global_indices = list(range(total_tiles))
-        all_assignments = self._distribute_items(global_indices, num_workers + 1)
+        all_assignments = _distribute_tasks(global_indices, num_workers + 1)
         return all_assignments[worker_index + 1]  # +1 because 0 is master
     
     def _get_master_global_indices(self, total_tiles, num_workers):
         """Calculate which global tile indices are assigned to the master in flattened mode."""
         global_indices = list(range(total_tiles))
-        all_assignments = self._distribute_items(global_indices, num_workers + 1)
+        all_assignments = _distribute_tasks(global_indices, num_workers + 1)
         return all_assignments[0]
     
     def _process_and_blend_tile(self, tile_idx, tile_pos, upscaled_image, result_image,
@@ -495,43 +285,62 @@ class UltimateSDUpscaleDistributed:
         
         return result_image
     
+    async def _init_job_queue_unified(self, multi_job_id, mode='static', batch_size=None, 
+                                     total_tiles=None, enabled_workers=None, num_tiles_per_image=None,
+                                     assigned_to_workers=None, all_indices=None, task_assignments=None):
+        """Unified job queue initialization for both static and dynamic modes."""
+        if mode == 'dynamic':
+            # Dynamic mode initialization
+            await _init_job_queue(multi_job_id, 'dynamic', batch_size=batch_size, 
+                                 all_indices=all_indices, 
+                                 enabled_workers=list(assigned_to_workers.keys()) if assigned_to_workers else [])
+            # Add additional fields for backward compatibility
+            prompt_server = ensure_tile_jobs_initialized()
+            async with prompt_server.distributed_tile_jobs_lock:
+                job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
+                job_data['completed_images'] = {}
+                job_data['completed_tiles'] = {}  # For uniformity
+                # Fix: The endpoint expects 'pending_images', not 'pending_tasks'
+                job_data['pending_images'] = job_data[JOB_PENDING_TASKS]
+            debug_log(f"UltimateSDUpscale Master Dynamic - Initialized job queue with {batch_size} pending images for all participants")
+        else:
+            # Static mode initialization
+            # If num_tiles_per_image not provided, calculate it
+            if num_tiles_per_image is None and total_tiles is not None and batch_size is not None:
+                num_tiles_per_image = total_tiles // batch_size if batch_size > 0 else total_tiles
+            
+            await _init_job_queue(multi_job_id, 'static', 
+                                 batch_size=batch_size, 
+                                 num_tiles_per_image=num_tiles_per_image,
+                                 all_indices=None,
+                                 enabled_workers=enabled_workers,
+                                 task_assignments=task_assignments)
+            
+            # Add completed_tiles and total_items for backward compatibility
+            prompt_server = ensure_tile_jobs_initialized()
+            async with prompt_server.distributed_tile_jobs_lock:
+                if multi_job_id in prompt_server.distributed_pending_tile_jobs:
+                    job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
+                    job_data['completed_tiles'] = {}
+                    if total_tiles is not None:
+                        job_data['total_items'] = total_tiles
+                    debug_log(f"UltimateSDUpscale Master - Initialized job queue for {multi_job_id}")
+    
+    # Keep compatibility wrappers
     async def _init_job_queue_dynamic(self, multi_job_id, batch_size, assigned_to_workers=None, worker_status=None, all_indices=None):
         """Initialize the job queue for dynamic mode with pending images."""
-        prompt_server = ensure_tile_jobs_initialized()
-        async with prompt_server.distributed_tile_jobs_lock:
-            if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
-                prompt_server.distributed_pending_tile_jobs[multi_job_id] = {
-                    'queue': asyncio.Queue(),
-                    'mode': 'dynamic',
-                    'pending_images': asyncio.Queue(),
-                    'completed_images': {},
-                    'completed_tiles': {},  # For uniformity
-                    'batch_size': batch_size,
-                    'assigned_to_workers': assigned_to_workers or {},
-                    'worker_status': worker_status or {}
-                }
-                # Initialize pending images queue with all indices
-                pending_images = prompt_server.distributed_pending_tile_jobs[multi_job_id]['pending_images']
-                for i in all_indices:
-                    await pending_images.put(i)
-                debug_log(f"UltimateSDUpscale Master Dynamic - Initialized job queue with {len(all_indices)} pending images for all participants")
-            else:
-                debug_log(f"UltimateSDUpscale Master Dynamic - Queue already exists for {multi_job_id}")
+        await self._init_job_queue_unified(multi_job_id, mode='dynamic', batch_size=batch_size,
+                                         assigned_to_workers=assigned_to_workers, all_indices=all_indices)
     
-    async def _init_job_queue(self, multi_job_id):
+    async def _init_job_queue(self, multi_job_id, total_tiles, enabled_workers, batch_size=1, num_tiles_per_image=None, task_assignments=None):
         """Initialize the job queue for collecting tiles."""
-        prompt_server = ensure_tile_jobs_initialized()
-        async with prompt_server.distributed_tile_jobs_lock:
-            if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
-                prompt_server.distributed_pending_tile_jobs[multi_job_id] = {
-                    'queue': asyncio.Queue(),
-                    'mode': 'static',
-                    'completed_tiles': {}  # For static mode data
-                }
-                debug_log(f"UltimateSDUpscale Master - Initialized job queue for {multi_job_id}")
+        await self._init_job_queue_unified(multi_job_id, mode='static', batch_size=batch_size,
+                                         total_tiles=total_tiles, enabled_workers=enabled_workers,
+                                         num_tiles_per_image=num_tiles_per_image, task_assignments=task_assignments)
     
-    async def _async_collect_worker_tiles(self, multi_job_id, num_workers):
-        """Async helper to collect tiles from workers."""
+    async def _async_collect_results(self, multi_job_id, num_workers, mode='static', 
+                                   remaining_to_collect=None, batch_size=None):
+        """Unified async helper to collect results from workers (tiles or images)."""
         # Get the already initialized queue
         prompt_server = ensure_tile_jobs_initialized()
         async with prompt_server.distributed_tile_jobs_lock:
@@ -540,78 +349,133 @@ class UltimateSDUpscaleDistributed:
             job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
             if not isinstance(job_data, dict) or 'mode' not in job_data:
                 raise RuntimeError("Invalid job data structure")
-            if job_data['mode'] != 'static':
-                raise RuntimeError(f"Mode mismatch: expected static, got {job_data['mode']}")
+            if job_data['mode'] != mode:
+                raise RuntimeError(f"Mode mismatch: expected {mode}, got {job_data['mode']}")
             q = job_data['queue']
+            
+            # For dynamic mode, get reference to completed_images
+            if mode == 'dynamic':
+                completed_images = job_data['completed_images']
+                # Calculate expected count for logging
+                expected_count = remaining_to_collect or batch_size
+            else:
+                # Calculate expected count from job data for static mode
+                expected_count = job_data.get('total_items', 0) - len(job_data.get('completed_items', set()))
         
-        collected_tiles = {}
+        mode_str = "Dynamic" if mode == 'dynamic' else "Static"
+        item_type = "images" if mode == 'dynamic' else "tiles"
+        debug_log(f"UltimateSDUpscale Master {mode_str} - Starting collection, expecting {expected_count} {item_type} from {num_workers} workers")
+        
+        collected_results = {}
         workers_done = set()
-        timeout = TILE_WAIT_TIMEOUT
-        
-        debug_log(f"UltimateSDUpscale Master - Starting collection, expecting {num_workers} workers to complete")
+        timeout = 120.0 if mode == 'dynamic' else 60.0  # Longer timeout for full images
+        last_heartbeat_check = time.time()
+        collected_count = 0
         
         while len(workers_done) < num_workers:
+            # Check for user interruption
+            if comfy.model_management.processing_interrupted():
+                log("Processing interrupted by user")
+                raise comfy.model_management.InterruptProcessingException()
+                
+            # For dynamic mode with remaining_to_collect, check if we've collected enough
+            if mode == 'dynamic' and remaining_to_collect and collected_count >= remaining_to_collect:
+                break
+                
             try:
-                result = await asyncio.wait_for(q.get(), timeout=timeout)
+                # Shorter timeout for regular checks in dynamic mode
+                wait_timeout = 10.0 if mode == 'dynamic' else timeout
+                result = await asyncio.wait_for(q.get(), timeout=wait_timeout)
                 worker_id = result['worker_id']
                 is_last = result.get('is_last', False)
                 
-                # Check if batch mode
-                tiles = result.get('tiles', [])
-                if tiles:
-                    # Batch mode
-                    debug_log(f"UltimateSDUpscale Master - Received batch of {len(tiles)} tiles from worker '{worker_id}' (is_last={is_last})")
-                    
-                    for tile_data in tiles:
-                        # Validate required fields
-                        if 'batch_idx' not in tile_data:
-                            log(f"UltimateSDUpscale Master - Missing batch_idx in tile data, skipping")
-                            continue
-                        batch_idx = tile_data['batch_idx']
+                if mode == 'static':
+                    # Handle tiles
+                    tiles = result.get('tiles', [])
+                    if tiles:
+                        # Batch mode
+                        debug_log(f"UltimateSDUpscale Master - Received batch of {len(tiles)} tiles from worker '{worker_id}' (is_last={is_last})")
                         
-                        tile_idx = tile_data['tile_idx']
-                        # Use global_idx as key if available (for batch processing)
-                        key = tile_data.get('global_idx', tile_idx)
-                        
-                        # Store the full tile data including metadata
-                        collected_tiles[key] = {
-                            'tensor': tile_data['tensor'],
-                            'tile_idx': tile_idx,
-                            'x': tile_data['x'],
-                            'y': tile_data['y'],
-                            'extracted_width': tile_data['extracted_width'],
-                            'extracted_height': tile_data['extracted_height'],
-                            'padding': tile_data['padding'],
-                            'worker_id': worker_id,
-                            'batch_idx': tile_data.get('batch_idx', 0),
-                            'global_idx': tile_data.get('global_idx', tile_idx)
-                        }
-                else:
-                    # Single tile mode (backward compat)
-                    tile_idx = result['tile_idx']
-                    collected_tiles[tile_idx] = result
-                    debug_log(f"UltimateSDUpscale Master - Received single tile {tile_idx} from worker '{worker_id}' (is_last={is_last})")
+                        for tile_data in tiles:
+                            # Validate required fields
+                            if 'batch_idx' not in tile_data:
+                                log(f"UltimateSDUpscale Master - Missing batch_idx in tile data, skipping")
+                                continue
+                            
+                            tile_idx = tile_data['tile_idx']
+                            # Use global_idx as key if available (for batch processing)
+                            key = tile_data.get('global_idx', tile_idx)
+                            
+                            # Store the full tile data including metadata
+                            collected_results[key] = {
+                                'tensor': tile_data['tensor'],
+                                'tile_idx': tile_idx,
+                                'x': tile_data['x'],
+                                'y': tile_data['y'],
+                                'extracted_width': tile_data['extracted_width'],
+                                'extracted_height': tile_data['extracted_height'],
+                                'padding': tile_data['padding'],
+                                'worker_id': worker_id,
+                                'batch_idx': tile_data.get('batch_idx', 0),
+                                'global_idx': tile_data.get('global_idx', tile_idx)
+                            }
+                    else:
+                        # Single tile mode (backward compat)
+                        tile_idx = result['tile_idx']
+                        collected_results[tile_idx] = result
+                        debug_log(f"UltimateSDUpscale Master - Received single tile {tile_idx} from worker '{worker_id}' (is_last={is_last})")
+                
+                elif mode == 'dynamic':
+                    # Handle full images
+                    if 'image_idx' in result and 'image' in result:
+                        image_idx = result['image_idx']
+                        image_pil = result['image']
+                        completed_images[image_idx] = image_pil
+                        collected_results[image_idx] = image_pil
+                        collected_count += 1
+                        debug_log(f"UltimateSDUpscale Master Dynamic - Received image {image_idx} from worker {worker_id}")
                 
                 if is_last:
                     workers_done.add(worker_id)
-                    debug_log(f"UltimateSDUpscale Master - Worker {worker_id} completed")
-                
+                    debug_log(f"UltimateSDUpscale Master {mode_str} - Worker {worker_id} completed")
+                    
             except asyncio.TimeoutError:
-                log(f"UltimateSDUpscale Master - Timeout waiting for tiles")
-                break
+                if mode == 'dynamic':
+                    # Check for worker timeouts periodically
+                    current_time = time.time()
+                    if current_time - last_heartbeat_check >= 10.0:
+                        # Use the class method to check and requeue
+                        requeued = await self._check_and_requeue_timed_out_workers(multi_job_id, batch_size)
+                        if requeued > 0:
+                            log(f"UltimateSDUpscale Master Dynamic - Requeued {requeued} images from timed out workers")
+                        last_heartbeat_check = current_time
+                    
+                    # Check if we've been waiting too long overall
+                    if current_time - last_heartbeat_check > timeout:
+                        log(f"UltimateSDUpscale Master Dynamic - Overall timeout waiting for images")
+                        break
+                else:
+                    log(f"UltimateSDUpscale Master - Timeout waiting for {item_type}")
+                    break
         
-        debug_log(f"UltimateSDUpscale Master - Collection complete. Got {len(collected_tiles)} tiles from {len(workers_done)} workers")
+        debug_log(f"UltimateSDUpscale Master {mode_str} - Collection complete. Got {len(collected_results)} {item_type} from {len(workers_done)} workers")
         
         # Clean up job queue
-        prompt_server = ensure_tile_jobs_initialized()
         async with prompt_server.distributed_tile_jobs_lock:
             if multi_job_id in prompt_server.distributed_pending_tile_jobs:
                 del prompt_server.distributed_pending_tile_jobs[multi_job_id]
         
-        return collected_tiles
+        return collected_results if mode == 'static' else completed_images
+    
+    # Keep compatibility wrappers for existing code
+    async def _async_collect_worker_tiles(self, multi_job_id, num_workers):
+        """Async helper to collect tiles from workers."""
+        return await self._async_collect_results(multi_job_id, num_workers, mode='static')
     
     async def _mark_image_completed(self, multi_job_id, image_idx, image_pil):
         """Mark an image as completed in the job data."""
+        # Mark the image as completed with the image data
+        await _mark_task_completed(multi_job_id, image_idx, {'image': image_pil})
         prompt_server = ensure_tile_jobs_initialized()
         async with prompt_server.distributed_tile_jobs_lock:
             job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
@@ -620,87 +484,9 @@ class UltimateSDUpscaleDistributed:
 
     async def _async_collect_dynamic_images(self, multi_job_id, remaining_to_collect, num_workers, batch_size, master_processed_count):
         """Collect remaining processed images from workers."""
-        prompt_server = ensure_tile_jobs_initialized()
-        async with prompt_server.distributed_tile_jobs_lock:
-            if multi_job_id not in prompt_server.distributed_pending_tile_jobs:
-                raise RuntimeError(f"Job queue not initialized for {multi_job_id}")
-            job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
-            if not isinstance(job_data, dict) or 'mode' not in job_data:
-                raise RuntimeError("Invalid job data structure")
-            if job_data['mode'] != 'dynamic':
-                raise RuntimeError(f"Mode mismatch: expected dynamic, got {job_data['mode']}")
-            q = job_data['queue']
-            completed_images = job_data['completed_images']
-        
-        workers_done = set()
-        collected_count = 0
-        timeout = TILE_WAIT_TIMEOUT * 2  # Longer timeout for full images
-        last_heartbeat_check = time.time()
-        
-        debug_log(f"UltimateSDUpscale Master Dynamic - Waiting for {remaining_to_collect} more images from {num_workers} workers")
-        
-        while collected_count < remaining_to_collect and len(workers_done) < num_workers:
-            try:
-                result = await asyncio.wait_for(q.get(), timeout=10.0)  # Shorter timeout for regular checks
-                worker_id = result['worker_id']
-                is_last = result.get('is_last', False)
-                
-                if 'image_idx' in result and 'image' in result:
-                    image_idx = result['image_idx']
-                    image_pil = result['image']
-                    completed_images[image_idx] = image_pil
-                    collected_count += 1
-                    debug_log(f"UltimateSDUpscale Master Dynamic - Received image {image_idx} from worker {worker_id}")
-                
-                if is_last:
-                    workers_done.add(worker_id)
-                    debug_log(f"UltimateSDUpscale Master Dynamic - Worker {worker_id} completed")
-                    
-            except asyncio.TimeoutError:
-                # Check for worker timeouts
-                current_time = time.time()
-                if current_time - last_heartbeat_check >= 10.0:
-                    async with prompt_server.distributed_tile_jobs_lock:
-                        if multi_job_id in prompt_server.distributed_pending_tile_jobs:
-                            job_data_check = prompt_server.distributed_pending_tile_jobs[multi_job_id]
-                            # Check for timed out workers (60 second timeout)
-                            for worker, last_heartbeat in list(job_data_check.get('worker_status', {}).items()):
-                                if current_time - last_heartbeat > HEARTBEAT_TIMEOUT:
-                                    log(f"UltimateSDUpscale Master Dynamic - Worker {worker} timed out")
-                                    # Requeue assigned images from this worker
-                                    for idx in job_data_check.get('assigned_to_workers', {}).get(worker, []):
-                                        if idx not in completed_images:
-                                            await job_data_check['pending_images'].put(idx)
-                                            debug_log(f"UltimateSDUpscale Master Dynamic - Requeued image {idx} from timed out worker {worker}")
-                                    # Mark worker as done and clean up
-                                    workers_done.add(worker)
-                                    if 'worker_status' in job_data_check:
-                                        del job_data_check['worker_status'][worker]
-                                    if 'assigned_to_workers' in job_data_check:
-                                        job_data_check['assigned_to_workers'][worker] = []
-                    last_heartbeat_check = current_time
-                
-                # Check if we've been waiting too long overall
-                if current_time - last_heartbeat_check > timeout:
-                    log(f"UltimateSDUpscale Master Dynamic - Overall timeout waiting for images")
-                    # Requeue all unfinished images
-                    async with prompt_server.distributed_tile_jobs_lock:
-                        if multi_job_id in prompt_server.distributed_pending_tile_jobs:
-                            pending_queue = prompt_server.distributed_pending_tile_jobs[multi_job_id]['pending_images']
-                            for idx in range(batch_size):
-                                if idx not in completed_images:
-                                    await pending_queue.put(idx)
-                                    debug_log(f"UltimateSDUpscale Master Dynamic - Requeued image {idx}")
-                    break
-        
-        debug_log(f"UltimateSDUpscale Master Dynamic - Collection complete. Got {collected_count} images from workers")
-        
-        # Clean up job queue
-        async with prompt_server.distributed_tile_jobs_lock:
-            if multi_job_id in prompt_server.distributed_pending_tile_jobs:
-                del prompt_server.distributed_pending_tile_jobs[multi_job_id]
-        
-        return completed_images
+        return await self._async_collect_results(multi_job_id, num_workers, mode='dynamic', 
+                                               remaining_to_collect=remaining_to_collect, 
+                                               batch_size=batch_size)
     
     def round_to_multiple(self, value: int, multiple: int = 8) -> int:
         """Round value to nearest multiple."""
@@ -833,9 +619,15 @@ class UltimateSDUpscaleDistributed:
         tile_pil = tensor_to_pil(tile_tensor, 0)
         clean_tensor = pil_to_tensor(tile_pil)
         
+        # Ensure tensor is detached and doesn't require gradients
+        clean_tensor = clean_tensor.detach()
+        if hasattr(clean_tensor, 'requires_grad_'):
+            clean_tensor.requires_grad_(False)
+        
         # Move to correct device
         if tile_tensor.is_cuda:
             clean_tensor = clean_tensor.cuda()
+            clean_tensor = clean_tensor.detach()  # Detach again after device transfer
         
         # Clone conditioning per tile (shares models, clones hints for cropping)
         positive_tile = clone_conditioning(positive, clone_hints=True)
@@ -932,6 +724,551 @@ class UltimateSDUpscaleDistributed:
         # Convert back to RGB
         return result.convert('RGB')
     
+    def _slice_conditioning(self, positive, negative, batch_idx):
+        """Helper to slice conditioning for a specific batch index."""
+        # Clone and slice conditioning properly, including ControlNet hints
+        positive_sliced = clone_conditioning(positive)
+        negative_sliced = clone_conditioning(negative)
+        
+        for cond_list in [positive_sliced, negative_sliced]:
+            for i in range(len(cond_list)):
+                emb, cond_dict = cond_list[i]
+                if emb.shape[0] > 1:
+                    cond_list[i][0] = emb[batch_idx:batch_idx+1]
+                if 'control' in cond_dict:
+                    control = cond_dict['control']
+                    while control is not None:
+                        hint = control.cond_hint_original
+                        if hint.shape[0] > 1:
+                            control.cond_hint_original = hint[batch_idx:batch_idx+1]
+                        control = control.previous_controlnet
+                if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
+                    cond_dict['mask'] = cond_dict['mask'][batch_idx:batch_idx+1]
+        
+        return positive_sliced, negative_sliced
+    
+    async def _get_all_completed_tasks(self, multi_job_id):
+        """Helper to retrieve all completed tasks from the job data."""
+        prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if job_data and JOB_COMPLETED_TASKS in job_data:
+                return dict(job_data[JOB_COMPLETED_TASKS])  # Return a copy
+            return {}
+    
+    async def _process_worker_static_async(self, upscaled_image, model, positive, negative, vae,
+                                    seed, steps, cfg, sampler_name, scheduler, denoise,
+                                    tile_width, tile_height, padding, mask_blur,
+                                    force_uniform_tiles, tiled_decode, multi_job_id, master_url,
+                                    worker_id, enabled_workers):
+        """Enhanced static mode worker with health monitoring and retry logic."""
+        # Round tile dimensions
+        tile_width = self.round_to_multiple(tile_width)
+        tile_height = self.round_to_multiple(tile_height)
+        
+        # Calculate all tile positions
+        batch_size = upscaled_image.shape[0]
+        _, height, width, _ = upscaled_image.shape
+        all_tiles = self.calculate_tiles(width, height, tile_width, tile_height, force_uniform_tiles)
+        
+        # Calculate total tiles across all images
+        num_tiles_per_image = len(all_tiles)
+        total_tiles = batch_size * num_tiles_per_image
+        
+        # Get initial assigned global tile indices for this worker
+        assigned_global_indices = self._get_worker_global_indices(total_tiles, enabled_workers, worker_id)
+        
+        debug_log(f"UltimateSDUpscale Worker - Worker {worker_id} initially assigned {len(assigned_global_indices)} tiles")
+        
+        # Process initially assigned tiles
+        processed_tiles = []
+        sliced_conditioning_cache = {}
+        
+        # Process assigned tiles with heartbeat after each
+        for global_idx in assigned_global_indices:
+            # Process the tile
+            processed_tile = await self._process_single_tile(
+                global_idx, num_tiles_per_image, upscaled_image, all_tiles,
+                model, positive, negative, vae, seed, steps, cfg, sampler_name,
+                scheduler, denoise, tiled_decode, tile_width, tile_height, padding,
+                width, height, sliced_conditioning_cache
+            )
+            
+            if processed_tile:
+                processed_tiles.append(processed_tile)
+                
+                # Send heartbeat after each tile
+                try:
+                    await _send_heartbeat_to_master(multi_job_id, master_url, worker_id)
+                except Exception as e:
+                    debug_log(f"Heartbeat failed: {e}")
+        
+        # Send initial batch of processed tiles
+        if processed_tiles:
+            await self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id)
+            processed_tiles = []
+        
+        # Check for requeued tiles from failed workers
+        debug_log(f"Worker {worker_id} checking for requeued tiles...")
+        while True:
+            # Request next task from pending queue
+            task_id = await _get_next_task(multi_job_id)
+            if task_id is None:
+                break
+                
+            debug_log(f"Worker {worker_id} processing requeued tile {task_id}")
+            
+            # Process the requeued tile
+            processed_tile = await self._process_single_tile(
+                task_id, num_tiles_per_image, upscaled_image, all_tiles,
+                model, positive, negative, vae, seed, steps, cfg, sampler_name,
+                scheduler, denoise, tiled_decode, tile_width, tile_height, padding,
+                width, height, sliced_conditioning_cache
+            )
+            
+            if processed_tile:
+                processed_tiles.append(processed_tile)
+                
+                # Send heartbeat
+                try:
+                    await _send_heartbeat_to_master(multi_job_id, master_url, worker_id)
+                except Exception as e:
+                    debug_log(f"Heartbeat failed: {e}")
+                
+                # Send tiles in batches
+                if len(processed_tiles) >= MAX_BATCH:
+                    await self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id)
+                    processed_tiles = []
+        
+        # Send any remaining tiles
+        if processed_tiles:
+            await self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id)
+        
+        debug_log(f"Worker {worker_id} completed all assigned and requeued tiles")
+        return (upscaled_image,)
+    
+    def _process_worker_static_sync(self, upscaled_image, model, positive, negative, vae,
+                                    seed, steps, cfg, sampler_name, scheduler, denoise,
+                                    tile_width, tile_height, padding, mask_blur,
+                                    force_uniform_tiles, tiled_decode, multi_job_id, master_url,
+                                    worker_id, enabled_workers):
+        """Worker static mode processing with sync tensor operations and async communication."""
+        # Round tile dimensions
+        tile_width = self.round_to_multiple(tile_width)
+        tile_height = self.round_to_multiple(tile_height)
+        
+        # Get dimensions and calculate tiles
+        _, height, width, _ = upscaled_image.shape
+        all_tiles = self.calculate_tiles(width, height, tile_width, tile_height, force_uniform_tiles)
+        num_tiles_per_image = len(all_tiles)
+        
+        # Calculate worker assignments
+        num_workers = len(enabled_workers)
+        batch_size = upscaled_image.shape[0]
+        total_tiles = batch_size * num_tiles_per_image
+        worker_global_indices = self._get_worker_global_indices(total_tiles, enabled_workers, worker_id)
+        
+        debug_log(f"UltimateSDUpscale Worker - Worker {worker_id} processing {len(worker_global_indices)} tiles")
+        
+        # Process assigned tiles synchronously
+        processed_tiles = []
+        sliced_conditioning_cache = {}
+        
+        for global_idx in worker_global_indices:
+            batch_idx = global_idx // num_tiles_per_image
+            tile_idx = global_idx % num_tiles_per_image
+            
+            if batch_idx >= batch_size:
+                continue
+            
+            # Get or create sliced conditioning
+            if batch_idx not in sliced_conditioning_cache:
+                positive_sliced, negative_sliced = self._slice_conditioning(positive, negative, batch_idx)
+                sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
+            else:
+                positive_sliced, negative_sliced = sliced_conditioning_cache[batch_idx]
+            
+            # Process tile synchronously
+            processed_tile = self._process_single_tile(
+                global_idx, num_tiles_per_image, upscaled_image, all_tiles,
+                model, positive_sliced, negative_sliced, vae, seed, steps, cfg, sampler_name,
+                scheduler, denoise, tiled_decode, tile_width, tile_height, padding,
+                width, height, sliced_conditioning_cache
+            )
+            
+            if processed_tile:
+                processed_tiles.append(processed_tile)
+                
+                # Send heartbeat (async operation)
+                try:
+                    run_async_in_server_loop(
+                        _send_heartbeat_to_master(multi_job_id, master_url, worker_id),
+                        timeout=5.0
+                    )
+                except Exception as e:
+                    debug_log(f"Heartbeat failed: {e}")
+                
+                # Send tiles in batches
+                if len(processed_tiles) >= MAX_BATCH:
+                    run_async_in_server_loop(
+                        self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id),
+                        timeout=TILE_SEND_TIMEOUT
+                    )
+                    processed_tiles = []
+        
+        # Send initial batch of processed tiles
+        if processed_tiles:
+            run_async_in_server_loop(
+                self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id),
+                timeout=TILE_SEND_TIMEOUT
+            )
+            processed_tiles = []
+        
+        # Check for requeued tiles from failed workers
+        debug_log(f"Worker {worker_id} checking for requeued tiles...")
+        while True:
+            # Request next task from pending queue (async operation)
+            task_id = run_async_in_server_loop(
+                _get_next_task(multi_job_id),
+                timeout=5.0
+            )
+            if task_id is None:
+                break
+                
+            debug_log(f"Worker {worker_id} processing requeued tile {task_id}")
+            
+            # Process the requeued tile synchronously
+            batch_idx = task_id // num_tiles_per_image
+            tile_idx = task_id % num_tiles_per_image
+            
+            if batch_idx >= batch_size:
+                continue
+            
+            # Get or create sliced conditioning
+            if batch_idx not in sliced_conditioning_cache:
+                positive_sliced, negative_sliced = self._slice_conditioning(positive, negative, batch_idx)
+                sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
+            else:
+                positive_sliced, negative_sliced = sliced_conditioning_cache[batch_idx]
+            
+            processed_tile = self._process_single_tile(
+                task_id, num_tiles_per_image, upscaled_image, all_tiles,
+                model, positive_sliced, negative_sliced, vae, seed, steps, cfg, sampler_name,
+                scheduler, denoise, tiled_decode, tile_width, tile_height, padding,
+                width, height, sliced_conditioning_cache
+            )
+            
+            if processed_tile:
+                processed_tiles.append(processed_tile)
+                
+                # Send heartbeat
+                try:
+                    run_async_in_server_loop(
+                        _send_heartbeat_to_master(multi_job_id, master_url, worker_id),
+                        timeout=5.0
+                    )
+                except Exception as e:
+                    debug_log(f"Heartbeat failed: {e}")
+                
+                # Send tiles in batches
+                if len(processed_tiles) >= MAX_BATCH:
+                    run_async_in_server_loop(
+                        self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id),
+                        timeout=TILE_SEND_TIMEOUT
+                    )
+                    processed_tiles = []
+        
+        # Send any remaining tiles
+        if processed_tiles:
+            run_async_in_server_loop(
+                self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id),
+                timeout=TILE_SEND_TIMEOUT
+            )
+        
+        debug_log(f"Worker {worker_id} completed all assigned and requeued tiles")
+        return (upscaled_image,)
+    
+    async def _async_collect_and_monitor_static(self, multi_job_id, total_tiles, expected_total):
+        """Async helper for collection and monitoring in static mode.
+        Returns collected tasks dict. Caller should check if all tasks are complete."""
+        last_progress_log = time.time()
+        progress_interval = 5.0
+        last_heartbeat_check = time.time()
+        stall_count = 0
+        max_stall_count = 10  # Allow 10 iterations with no progress before returning
+        last_completed_count = 0
+        
+        while True:
+            # Check for user interruption
+            if comfy.model_management.processing_interrupted():
+                log("Processing interrupted by user")
+                raise comfy.model_management.InterruptProcessingException()
+            
+            # Drain any pending results
+            collected_count = await _drain_results_queue(multi_job_id)
+            
+            # Check and requeue timed-out workers periodically
+            current_time = time.time()
+            if current_time - last_heartbeat_check >= 10.0:
+                requeued_count = await self._check_and_requeue_timed_out_workers(multi_job_id, expected_total)
+                if requeued_count > 0:
+                    log(f"Requeued {requeued_count} tasks from timed-out workers")
+                    stall_count = 0  # Reset stall count when we requeue
+                last_heartbeat_check = current_time
+            
+            # Get current completion count
+            completed_count = await _get_completed_count(multi_job_id)
+            
+            # Progress logging
+            if current_time - last_progress_log >= progress_interval:
+                log(f"Progress: {completed_count}/{expected_total} tasks completed")
+                last_progress_log = current_time
+            
+            # Check if all tasks are completed
+            if completed_count >= expected_total:
+                debug_log(f"All {expected_total} tasks completed")
+                break
+            
+            # Check if we're making progress
+            if completed_count > last_completed_count:
+                stall_count = 0  # Reset stall count on progress
+                last_completed_count = completed_count
+            else:
+                stall_count += 1
+            
+            # If no progress for too long, check if we need to process locally
+            if stall_count >= max_stall_count:
+                prompt_server = ensure_tile_jobs_initialized()
+                async with prompt_server.distributed_tile_jobs_lock:
+                    job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+                    if job_data:
+                        pending_queue = job_data.get(JOB_PENDING_TASKS)
+                        # If there are pending tasks but no active workers, or we're stalled
+                        if pending_queue and not pending_queue.empty():
+                            log(f"Collection stalled with {expected_total - completed_count} tasks remaining. Returning for local processing.")
+                            break
+            
+            # Wait a bit before next check
+            await asyncio.sleep(0.5)
+        
+        # Get all completed tasks for return
+        return await self._get_all_completed_tasks(multi_job_id)
+    
+    def _process_master_static_sync(self, upscaled_image, model, positive, negative, vae,
+                                    seed, steps, cfg, sampler_name, scheduler, denoise,
+                                    tile_width, tile_height, padding, mask_blur,
+                                    force_uniform_tiles, tiled_decode, multi_job_id, enabled_workers,
+                                    all_tiles, num_tiles_per_image):
+        """Static mode master processing with sync tensor operations and async coordination."""
+        batch_size = upscaled_image.shape[0]
+        _, height, width, _ = upscaled_image.shape
+        total_tiles = batch_size * num_tiles_per_image
+        
+        # Distribute tasks across master and workers
+        all_indices = list(range(total_tiles))
+        num_participants = len(enabled_workers) + 1
+        task_assignments = _distribute_tasks(all_indices, num_participants)
+        master_indices = task_assignments[0]
+        
+        # Initialize job queue with task assignments (async operation)
+        run_async_in_server_loop(
+            self._init_job_queue(multi_job_id, total_tiles, enabled_workers, batch_size, num_tiles_per_image, task_assignments),
+            timeout=10.0
+        )
+        
+        debug_log(f"UltimateSDUpscale Master - Initialized static job queue for {total_tiles} tiles")
+        
+        # Convert batch to PIL list for processing
+        result_images = []
+        for b in range(batch_size):
+            image_pil = tensor_to_pil(upscaled_image[b:b+1], 0)
+            result_images.append(image_pil.copy())
+        
+        debug_log(f"UltimateSDUpscale Master - Processing {len(master_indices)} tiles locally")
+        
+        # Process master's tiles synchronously
+        sliced_conditioning_cache = {}
+        for global_idx in master_indices:
+            # Check for user interruption
+            comfy.model_management.throw_exception_if_processing_interrupted()
+            batch_idx = global_idx // num_tiles_per_image
+            tile_idx = global_idx % num_tiles_per_image
+            
+            if batch_idx >= batch_size:
+                continue
+            
+            # Get or create sliced conditioning
+            if batch_idx not in sliced_conditioning_cache:
+                positive_sliced, negative_sliced = self._slice_conditioning(positive, negative, batch_idx)
+                sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
+            else:
+                positive_sliced, negative_sliced = sliced_conditioning_cache[batch_idx]
+            
+            # Use unique seed per image
+            image_seed = seed + batch_idx * 1000
+            
+            # Process tile synchronously - no async context for tensor operations
+            result_images[batch_idx] = self._process_and_blend_tile(
+                tile_idx, all_tiles[tile_idx], upscaled_image[batch_idx:batch_idx+1], result_images[batch_idx],
+                model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
+                sampler_name, scheduler, denoise, tile_width, tile_height,
+                padding, mask_blur, width, height, tiled_decode, batch_idx=batch_idx
+            )
+            
+            # Mark as completed (async operation)
+            run_async_in_server_loop(
+                _mark_task_completed(multi_job_id, global_idx, {'batch_idx': batch_idx, 'tile_idx': tile_idx}),
+                timeout=5.0
+            )
+        
+        # Collect worker results using async operations
+        try:
+            collected_tasks = run_async_in_server_loop(
+                self._async_collect_and_monitor_static(multi_job_id, total_tiles, expected_total=total_tiles),
+                timeout=300.0  # 5 minutes to allow for retries and requeuing
+            )
+        except comfy.model_management.InterruptProcessingException:
+            # Clean up job on interruption
+            run_async_in_server_loop(_cleanup_job(multi_job_id), timeout=5.0)
+            raise
+        
+        # Check if we need to process any remaining tasks locally
+        completed_count = len(collected_tasks)
+        if completed_count < total_tiles:
+            log(f"Processing remaining {total_tiles - completed_count} tasks locally after worker failures")
+            
+            # Process any pending tasks synchronously
+            while True:
+                # Check for user interruption
+                comfy.model_management.throw_exception_if_processing_interrupted()
+                
+                # Get next task from pending queue
+                task_id = run_async_in_server_loop(
+                    _get_next_task(multi_job_id),
+                    timeout=5.0
+                )
+                
+                if task_id is None:
+                    break
+                
+                batch_idx = task_id // num_tiles_per_image
+                tile_idx = task_id % num_tiles_per_image
+                
+                if batch_idx >= batch_size:
+                    continue
+                
+                # Get or create sliced conditioning
+                if batch_idx not in sliced_conditioning_cache:
+                    positive_sliced, negative_sliced = self._slice_conditioning(positive, negative, batch_idx)
+                    sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
+                else:
+                    positive_sliced, negative_sliced = sliced_conditioning_cache[batch_idx]
+                
+                # Use unique seed per image
+                image_seed = seed + batch_idx * 1000
+                
+                # Process tile synchronously
+                result_images[batch_idx] = self._process_and_blend_tile(
+                    tile_idx, all_tiles[tile_idx], upscaled_image[batch_idx:batch_idx+1], result_images[batch_idx],
+                    model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
+                    sampler_name, scheduler, denoise, tile_width, tile_height,
+                    padding, mask_blur, width, height, tiled_decode, batch_idx=batch_idx
+                )
+                
+                # Mark as completed and store in collected_tasks
+                run_async_in_server_loop(
+                    _mark_task_completed(multi_job_id, task_id, {'batch_idx': batch_idx, 'tile_idx': tile_idx}),
+                    timeout=5.0
+                )
+                # Add to collected_tasks so we skip it in the blending loop
+                collected_tasks[task_id] = {'batch_idx': batch_idx, 'tile_idx': tile_idx}
+        
+        # Blend worker tiles synchronously
+        for global_idx, tile_data in collected_tasks.items():
+            if global_idx in master_indices:
+                continue  # Skip master's tiles
+            
+            if 'tensor' in tile_data:
+                batch_idx = tile_data.get('batch_idx', global_idx // num_tiles_per_image)
+                tile_idx = tile_data.get('tile_idx', global_idx % num_tiles_per_image)
+                
+                if batch_idx >= batch_size:
+                    continue
+                
+                # Blend tile synchronously
+                x = tile_data.get('x', 0)
+                y = tile_data.get('y', 0)
+                tile_tensor = tile_data['tensor']
+                tile_pil = tensor_to_pil(tile_tensor, 0)
+                orig_x, orig_y = all_tiles[tile_idx]
+                tile_mask = self.create_tile_mask(width, height, orig_x, orig_y, tile_width, tile_height, mask_blur)
+                extracted_width = tile_data.get('extracted_width', tile_width + 2 * padding)
+                extracted_height = tile_data.get('extracted_height', tile_height + 2 * padding)
+                result_images[batch_idx] = self.blend_tile(result_images[batch_idx], tile_pil,
+                                                          x, y, (extracted_width, extracted_height), tile_mask, padding)
+        
+        try:
+            # Convert back to tensor
+            if batch_size == 1:
+                result_tensor = pil_to_tensor(result_images[0])
+            else:
+                result_tensors = [pil_to_tensor(img) for img in result_images]
+                result_tensor = torch.cat(result_tensors, dim=0)
+            
+            if upscaled_image.is_cuda:
+                result_tensor = result_tensor.cuda()
+            
+            log(f"UltimateSDUpscale Master - Job {multi_job_id} complete")
+            return (result_tensor,)
+        finally:
+            # Cleanup (async operation) - always execute
+            run_async_in_server_loop(_cleanup_job(multi_job_id), timeout=5.0)
+    
+    def _process_single_tile(self, global_idx, num_tiles_per_image, upscaled_image, all_tiles,
+                                  model, positive, negative, vae, seed, steps, cfg, sampler_name,
+                                  scheduler, denoise, tiled_decode, tile_width, tile_height, padding,
+                                  width, height, sliced_conditioning_cache):
+        """Process a single tile."""
+        # Calculate which image and tile this corresponds to
+        batch_idx = global_idx // num_tiles_per_image
+        tile_idx = global_idx % num_tiles_per_image
+        
+        # Skip if batch_idx is out of range
+        if batch_idx >= upscaled_image.shape[0]:
+            debug_log(f"Warning: Calculated batch_idx {batch_idx} exceeds batch size {upscaled_image.shape[0]}")
+            return None
+        
+        # Get or create sliced conditioning for this batch index
+        if batch_idx not in sliced_conditioning_cache:
+            positive_sliced, negative_sliced = self._slice_conditioning(positive, negative, batch_idx)
+            sliced_conditioning_cache[batch_idx] = (positive_sliced, negative_sliced)
+        else:
+            positive_sliced, negative_sliced = sliced_conditioning_cache[batch_idx]
+        
+        x, y = all_tiles[tile_idx]
+        
+        # Extract tile from the specific image in the batch
+        tile_tensor, x1, y1, ew, eh = self.extract_tile_with_padding(
+            upscaled_image[batch_idx:batch_idx+1], x, y, tile_width, tile_height, padding
+        )
+        
+        # Process tile through SD with unique seed
+        image_seed = seed + batch_idx * 1000
+        processed_tile = self.process_tile(tile_tensor, model, positive_sliced, negative_sliced, vae,
+                                         image_seed + tile_idx, steps, cfg, sampler_name,
+                                         scheduler, denoise, tiled_decode, batch_idx=batch_idx,
+                                         region=(x1, y1, x1 + ew, y1 + eh), image_size=(width, height))
+        
+        return {
+            'tile': processed_tile,
+            'global_idx': global_idx,
+            'batch_idx': batch_idx,
+            'tile_idx': tile_idx,
+            'x': x1,
+            'y': y1,
+            'extracted_width': ew,
+            'extracted_height': eh
+        }
     
     async def send_tiles_batch_to_master(self, processed_tiles, multi_job_id, master_url, 
                                        padding, worker_id):
@@ -993,7 +1330,7 @@ class UltimateSDUpscaleDistributed:
             for attempt in range(max_retries):
                 try:
                     session = await get_client_session()
-                    url = f"{master_url}/distributed/tile_complete"
+                    url = f"{master_url}/distributed/submit_tiles"
                     
                     async with session.post(url, data=data) as response:
                         response.raise_for_status()
@@ -1297,17 +1634,6 @@ class UltimateSDUpscaleDistributed:
             except asyncio.TimeoutError:
                 return None
     
-    async def _get_completed_count(self, multi_job_id):
-        """Get count of completed images from workers."""
-        prompt_server = ensure_tile_jobs_initialized()
-        async with prompt_server.distributed_tile_jobs_lock:
-            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
-            if job_data and 'completed_images' in job_data:
-                # Count only worker-completed images (not master's)
-                completed = job_data['completed_images']
-                worker_count = len([idx for idx in completed if isinstance(completed[idx], Image.Image)])
-                return worker_count
-            return 0
     
     async def _get_total_completed_count(self, multi_job_id):
         """Get total count of all completed images (master + workers)."""
@@ -1374,33 +1700,8 @@ class UltimateSDUpscaleDistributed:
     
     async def _check_and_requeue_timed_out_workers(self, multi_job_id, batch_size):
         """Check for timed out workers and requeue their assigned images. Returns count of requeued images."""
-        prompt_server = ensure_tile_jobs_initialized()
-        async with prompt_server.distributed_tile_jobs_lock:
-            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
-            if not job_data:
-                return 0
-                
-            current_time = time.time()
-            requeued_count = 0
-            completed_images = job_data.get('completed_images', {})
-            
-            # Check for timed out workers (60 second timeout)
-            for worker, last_heartbeat in list(job_data.get('worker_status', {}).items()):
-                if current_time - last_heartbeat > HEARTBEAT_TIMEOUT:
-                    log(f"Worker {worker} timed out")
-                    # Requeue assigned images from this worker
-                    for idx in job_data.get('assigned_to_workers', {}).get(worker, []):
-                        if idx not in completed_images:
-                            await job_data['pending_images'].put(idx)
-                            requeued_count += 1
-                            debug_log(f"Requeued image {idx} from timed out worker {worker}")
-                    # Clean up worker tracking
-                    if 'worker_status' in job_data:
-                        del job_data['worker_status'][worker]
-                    if 'assigned_to_workers' in job_data:
-                        job_data['assigned_to_workers'][worker] = []
-            
-            return requeued_count
+        # Use the original function from usdu_managment.py
+        return await _check_and_requeue_timed_out_workers(multi_job_id, batch_size)
     
     
     def process_worker_dynamic(self, upscaled_image, model, positive, negative, vae,
@@ -1490,7 +1791,7 @@ class UltimateSDUpscaleDistributed:
                         padding, mask_blur, width, height, tiled_decode, batch_idx=image_idx
                     )
                     run_async_in_server_loop(
-                        self._send_heartbeat_to_master(multi_job_id, master_url, worker_id),
+                        _send_heartbeat_to_master(multi_job_id, master_url, worker_id),
                         timeout=5.0
                     )
                 
@@ -1505,7 +1806,7 @@ class UltimateSDUpscaleDistributed:
                     )
                     # Send heartbeat after processing
                     run_async_in_server_loop(
-                        self._send_heartbeat_to_master(multi_job_id, master_url, worker_id),
+                        _send_heartbeat_to_master(multi_job_id, master_url, worker_id),
                         timeout=5.0
                     )
                     if is_last:
@@ -1611,7 +1912,7 @@ class UltimateSDUpscaleDistributed:
         for attempt in range(max_retries):
             try:
                 session = await get_client_session()
-                url = f"{master_url}/distributed/tile_complete"
+                url = f"{master_url}/distributed/submit_image"
                 
                 async with session.post(url, data=data) as response:
                     response.raise_for_status()
@@ -1627,17 +1928,7 @@ class UltimateSDUpscaleDistributed:
                     log(f"Failed to send image {image_idx} after {max_retries} attempts: {e}")
                     raise
     
-    async def _send_heartbeat_to_master(self, multi_job_id, master_url, worker_id):
-        """Send heartbeat signal to master."""
-        try:
-            data = {'multi_job_id': multi_job_id, 'worker_id': str(worker_id)}
-            session = await get_client_session()
-            url = f"{master_url}/distributed/heartbeat"
-            
-            async with session.post(url, json=data) as response:
-                response.raise_for_status()
-        except Exception as e:
-            pass
+    # Note: Using _send_heartbeat_to_master from usdu_managment.py instead of duplicate
     
     async def _send_worker_complete_signal(self, multi_job_id, master_url, worker_id):
         """Send completion signal to master in dynamic mode."""
@@ -1646,11 +1937,10 @@ class UltimateSDUpscaleDistributed:
         data.add_field('multi_job_id', multi_job_id)
         data.add_field('worker_id', str(worker_id))
         data.add_field('is_last', 'true')
-        # Send empty tile data to signal completion
-        data.add_field('batch_size', '0')
+        # No image data - just completion signal
         
         session = await get_client_session()
-        url = f"{master_url}/distributed/tile_complete"
+        url = f"{master_url}/distributed/submit_image"
         
         async with session.post(url, data=data) as response:
             response.raise_for_status()
@@ -1664,23 +1954,7 @@ class UltimateSDUpscaleDistributed:
             return "static"
         return "dynamic"
 
-    def _distribute_items(self, items: list, num_participants: int) -> List[List[any]]:
-        """Distributes a list of items among N participants."""
-        if num_participants == 0:
-            return [items] # All items for the single participant (master)
-
-        items_per_participant = len(items) // num_participants
-        remainder = len(items) % num_participants
-        
-        assignments = []
-        start_idx = 0
-        for i in range(num_participants):
-            count = items_per_participant + (1 if i < remainder else 0)
-            end_idx = start_idx + count
-            assignments.append(items[start_idx:end_idx])
-            start_idx = end_idx
-        
-        return assignments
+    # Note: Using _distribute_tasks from usdu_managment.py instead of duplicate _distribute_items
 
 # Ensure initialization before registering routes
 ensure_tile_jobs_initialized()
