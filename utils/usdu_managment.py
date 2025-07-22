@@ -61,16 +61,20 @@ async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_ima
             debug_log(f"Initialized dynamic queue with {batch_size} pending images")
         elif mode == 'static':
             job_data[JOB_NUM_TILES_PER_IMAGE] = num_tiles_per_image
-            # For static, pending_tasks starts empty; requeues will be added later
-            debug_log(f"Initialized static queue for {batch_size * num_tiles_per_image} tiles")
+            # For static with dynamic distribution, populate all tile indices in pending queue
+            pending_queue = job_data[JOB_PENDING_TASKS]
+            total_tiles = batch_size * num_tiles_per_image
+            for i in range(total_tiles):
+                await pending_queue.put(i)
+            debug_log(f"Initialized static queue with {total_tiles} pending tiles for dynamic distribution")
             
-            # If task assignments provided, populate JOB_ASSIGNED_TO_WORKERS
+            # Keep backward compatibility - if task assignments provided, still track them
             if task_assignments and enabled_workers:
                 # task_assignments[0] is for master, 1+ are for workers
                 for i, worker_id in enumerate(enabled_workers):
                     if i + 1 < len(task_assignments):
                         job_data[JOB_ASSIGNED_TO_WORKERS][worker_id] = task_assignments[i + 1]
-                        debug_log(f"Worker {worker_id} assigned {len(task_assignments[i + 1])} tasks")
+                        debug_log(f"Worker {worker_id} pre-assigned {len(task_assignments[i + 1])} tasks (legacy mode)")
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -748,7 +752,7 @@ def ensure_tile_jobs_initialized():
 # API Endpoint for tile completion
 @server.PromptServer.instance.routes.post("/distributed/request_image")
 async def request_image_endpoint(request):
-    """Endpoint for workers to request images in dynamic mode."""
+    """Endpoint for workers to request tasks (images in dynamic mode, tiles in static mode)."""
     try:
         data = await request.json()
         worker_id = data.get('worker_id')
@@ -763,26 +767,40 @@ async def request_image_endpoint(request):
                 job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
                 if not isinstance(job_data, dict) or 'mode' not in job_data:
                     return await handle_api_error(request, "Invalid job data structure", 500)
-                if job_data['mode'] != 'dynamic':
-                    return await handle_api_error(request, f"Mode mismatch: expected dynamic, got {job_data['mode']}", 400)
-                if 'pending_images' in job_data:
+                
+                mode = job_data['mode']
+                
+                # Handle both dynamic and static modes
+                if mode == 'dynamic' and 'pending_images' in job_data:
                     pending_queue = job_data['pending_images']
-                    try:
-                        image_idx = await asyncio.wait_for(pending_queue.get(), timeout=0.1)
-                        # Track assigned image
-                        if 'assigned_to_workers' in job_data and worker_id in job_data['assigned_to_workers']:
-                            job_data['assigned_to_workers'][worker_id].append(image_idx)
-                        # Update worker heartbeat
-                        if 'worker_status' in job_data:
-                            job_data['worker_status'][worker_id] = time.time()
-                        # Get estimated remaining count
-                        remaining = pending_queue.qsize()  # Approximate
-                        debug_log(f"UltimateSDUpscale API - Assigned image {image_idx} to worker {worker_id}")
-                        return web.json_response({"image_idx": image_idx, "estimated_remaining": remaining})
-                    except asyncio.TimeoutError:
-                        return web.json_response({"image_idx": None})
+                elif mode == 'static' and JOB_PENDING_TASKS in job_data:
+                    pending_queue = job_data[JOB_PENDING_TASKS]
                 else:
-                    return await handle_api_error(request, "Invalid dynamic mode configuration", 400)
+                    return await handle_api_error(request, f"Invalid {mode} mode configuration", 400)
+                
+                try:
+                    task_idx = await asyncio.wait_for(pending_queue.get(), timeout=0.1)
+                    # Track assigned task
+                    if 'assigned_to_workers' in job_data and worker_id in job_data['assigned_to_workers']:
+                        job_data['assigned_to_workers'][worker_id].append(task_idx)
+                    # Update worker heartbeat
+                    if 'worker_status' in job_data:
+                        job_data['worker_status'][worker_id] = time.time()
+                    # Get estimated remaining count
+                    remaining = pending_queue.qsize()  # Approximate
+                    
+                    # Return appropriate response based on mode
+                    if mode == 'dynamic':
+                        debug_log(f"UltimateSDUpscale API - Assigned image {task_idx} to worker {worker_id}")
+                        return web.json_response({"image_idx": task_idx, "estimated_remaining": remaining})
+                    else:  # static
+                        debug_log(f"UltimateSDUpscale API - Assigned tile {task_idx} to worker {worker_id}")
+                        return web.json_response({"tile_idx": task_idx, "estimated_remaining": remaining})
+                except asyncio.TimeoutError:
+                    if mode == 'dynamic':
+                        return web.json_response({"image_idx": None})
+                    else:
+                        return web.json_response({"tile_idx": None})
             else:
                 return await handle_api_error(request, "Job not found", 404)
     except Exception as e:
