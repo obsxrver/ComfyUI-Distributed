@@ -36,8 +36,8 @@
 
 ## Requirements
 
-- ComfyUI installation
-   - Desktop app not supported currently
+- ComfyUI
+> Note: Desktop app not supported currently
 - Multiple GPUs
 - That's it
 
