@@ -10,6 +10,8 @@
 
 > **A powerful extension for ComfyUI that enables distributed and parallel processing across multiple GPUs and machines. Generate more images and videos and accelerate your upscaling workflows by leveraging all available GPU resources in your network.**
 
+![Clipboard Image (3)](https://github.com/user-attachments/assets/19fdd1be-8f6e-4df5-bcd9-538ef566fa82)
+
 ---
 
 ## Key Features
@@ -29,7 +31,7 @@
 #### Convenience
 - Auto-setup local workers; easily add remote/cloud ones
 - Manage workers via UI panel
-- Convert workflows to distributed with less than 2 nodes
+- Convert any workflow to distributed with 2 nodes
 - JSON configuration with UI controls
 
 ---
@@ -56,7 +58,7 @@
 
 ## Workflow Examples
 
-### Basic Distributed Generation
+### Basic Parallel Generation
 
 ![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
 
@@ -65,6 +67,8 @@
 3. Add **Distributed Collector** → after VAE Decode
 4. Enable workers in the UI
 5. Run the workflow!
+
+### Parallel WAN Generation
 
 ### Distributed Upscaling
 
