@@ -60,6 +60,30 @@
 
 ---
 
+## Workflow Examples
+
+### Basic Distributed Generation
+
+![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
+
+1. Create your normal ComfyUI workflow
+2. Add **Distributed Seed** → connect to sampler's seed
+3. Add **Distributed Collector** → after VAE Decode
+4. Enable workers in the UI
+5. Run the workflow!
+
+### Distributed Upscaling
+
+![Clipboard Image (2)](https://github.com/user-attachments/assets/ec2548d0-1fc7-4705-801f-3270d720cfce)
+
+1. Load your image
+2. Upscale with ESRGAN or similar
+3. Connect to **Ultimate SD Upscale Distributed**
+4. Configure tile settings
+5. Enable workers for faster processing
+
+---
+
 ## Nodes
 
 ### Distributed Collector
@@ -88,30 +112,6 @@
 
 ---
 
-## Workflow Examples
-
-### Basic Distributed Generation
-
-![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
-
-1. Create your normal ComfyUI workflow
-2. Add **Distributed Seed** → connect to sampler's seed
-3. Add **Distributed Collector** → after VAE Decode
-4. Enable workers in the UI
-5. Run the workflow!
-
-### Distributed Upscaling
-
-![Clipboard Image (2)](https://github.com/user-attachments/assets/ec2548d0-1fc7-4705-801f-3270d720cfce)
-
-1. Load your image
-2. Upscale with ESRGAN or similar
-3. Connect to **Ultimate SD Upscale Distributed**
-4. Configure tile settings
-5. Enable workers for faster processing
-
----
-
 ## FAQ
 
 Does it combine VRAM of multiple GPUs?
@@ -136,7 +136,7 @@ Yes, it does work, but you need to know how to set up your Docker environment. I
 
 ## Disclaimer
 
-This software is provided “as is” without any warranties, express or implied, including but not limited to merchantability, fitness for a particular purpose, or non-infringement. The developers and copyright holders are not liable for any claims, damages, or liabilities—whether in contract, tort, or otherwise—arising from the use, modification, distribution, or other dealings with the software.
+By using this software, you agree to be bound by the terms of this Disclaimer. The software is provided “as is” without any warranties, express or implied, including but not limited to merchantability, fitness for a particular purpose, or non-infringement. The developers and copyright holders are not liable for any claims, damages, or liabilities—whether in contract, tort, or otherwise—arising from the use, modification, distribution, or other dealings with the software.
 
 Users are solely responsible for ensuring their use of the software, including any content it generates, complies with all applicable laws and regulations in their jurisdiction. The developers are not responsible for any legal violations resulting from user actions.
 
