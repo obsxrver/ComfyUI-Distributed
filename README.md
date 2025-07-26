@@ -134,6 +134,15 @@ Yes, it does work, but you need to know how to set up your Docker environment. I
 
 ---
 
-## Development
+## Disclaimer
 
-This project is under active development. Contributions are welcome!
+This software is provided “as is” without any warranties, express or implied, including but not limited to merchantability, fitness for a particular purpose, or non-infringement. The developers and copyright holders are not liable for any claims, damages, or liabilities—whether in contract, tort, or otherwise—arising from the use, modification, distribution, or other dealings with the software.
+
+Users are solely responsible for ensuring their use of the software, including any content it generates, complies with all applicable laws and regulations in their jurisdiction. The developers are not responsible for any legal violations resulting from user actions.
+
+Additionally, users are responsible for the security and integrity of their networks, including protecting against unauthorized access, hacking, data breaches, or loss. The developers assume no liability for any damages, losses, or incidents arising from improper configuration, misuse, or external threats to user environments.
+
+---
+
+## Support the Project
+If my custom nodes have added value to your workflow, consider fueling future development with a coffee! Your support helps keep this project thriving. Buy me a coffee at: https://buymeacoffee.com/robertvoy
