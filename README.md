@@ -15,28 +15,22 @@
 ## Key Features
 
 #### Parallel Workflow Processing
-- Run the same workflow on multiple GPUs simultaneously with different seeds
-- Get multiple outputs in the same time it takes to generate one
-- The more workers you have, the more output you get
-- Supports both video and images
+- Run workflows on multiple GPUs simultaneously with varied seeds
+- Generate multiple outputs in the time of one
+- Scale output with more workers
+- Supports images and videos
 
 #### Distributed Upscaling
-- Supercharge Ultimate SD Upscale by having tiles processed across multiple GPUs
-- Intelligent work distribution for asymmetrical GPU setups
-- Static distribution for similar/same GPUs
-- Supports both single images and image batches
+- Accelerate Ultimate SD Upscale by distributing tiles across GPUs
+- Intelligent distribution for asymmetric setups
+- Static distribution for similar GPUs
+- Handles single images and batches
 
 #### Convenience
-- Automatically set up your local workers and easily add remote and cloud workers
-- Manage the workers through the UI panel
-- Easily convert any workflow to a distributed one, using no more than 2 nodes
-
-#### Management & Monitoring
-- **Worker Management** - Launch and monitor workers from the UI
-- **Network Support** - Use GPUs across different machines on your network
-- **Cloud Support** - Use GPUs from cloud providers
-- **Real-time Monitoring** - Track worker status and performance from the UI
-- **Easy Configuration** - JSON-based configuration with UI controls
+- Auto-setup local workers; easily add remote/cloud ones
+- Manage workers via UI panel
+- Convert workflows to distributed with less than 2 nodes
+- JSON configuration with UI controls
 
 ---
 
@@ -114,23 +108,35 @@
 
 ## FAQ
 
-Does it combine VRAM of multiple GPUs?
-No.
+<details>
+<summary>Does it combine VRAM of multiple GPUs?</summary>
+No, it does not combine VRAM of multiple GPUs.
+</details>
 
-Does it speed up the generation of a single image/video?
-No, it gives you more images/videos, rather than a faster single one. However, it does speed up the upscaling of a single image using the Ultimate SD Upscale Distributed.
+<details>
+<summary>Does it speed up the generation of a single image or video?</summary>
+No, it does not speed up the generation of a single image or video. Instead, it enables the generation of more images or videos simultaneously. However, it can speed up the upscaling of a single image when using the Ultimate SD Upscale Distributed feature.
+</details>
 
-Does it work with ComfyUI desktop app?
-Not currently.
+<details>
+<summary>Does it work with the ComfyUI desktop app?</summary>
+Currently, it is not compatible with the ComfyUI desktop app.
+</details>
 
-Can I combine my RTX 5090 with a GTX 980 to get faster results?
-You can, but this works best with cards that are similar. If you have a large imbalance between GPUs, you will run into bottlenecks. Although you could still benefit from Ultimate SD Upscale Distributed with static_distribution set to false. This will allow the faster card to process more. Note this only works for upscaling.
+<details>
+<summary>Can I combine my RTX 5090 with a GTX 980 to get faster results?</summary>
+Yes, you can combine different GPUs, but performance is optimized when using similar GPUs. A significant performance imbalance between GPUs may cause bottlenecks. For upscaling, setting `static_distribution` to `false` allows the faster GPU to handle more processing, which can mitigate some bottlenecks. Note that this setting only applies to upscaling tasks.
+</details>
 
-Does this work with cloud providers?
-Yes, see setup guides.
+<details>
+<summary>Does this work with cloud providers?</summary>
+Yes, it is compatible with cloud providers. Refer to the setup guides for detailed instructions.
+</details>
 
-Can I make this work with my Docker setup?
-Yes, it does work, but you need to know how to set up your Docker environment. I won't be able to assist you with that.
+<details>
+<summary>Can I make this work with my Docker setup?</summary>
+Yes, it is compatible with Docker setups, but you will need to configure your Docker environment yourself. Unfortunately, assistance with Docker configuration is not provided.
+</details>
 
 ---
 
