@@ -106,40 +106,6 @@
 
 ---
 
-## FAQ
-
-<details>
-<summary>Does it combine VRAM of multiple GPUs?</summary>
-No, it does not combine VRAM of multiple GPUs.
-</details>
-
-<details>
-<summary>Does it speed up the generation of a single image or video?</summary>
-No, it does not speed up the generation of a single image or video. Instead, it enables the generation of more images or videos simultaneously. However, it can speed up the upscaling of a single image when using the Ultimate SD Upscale Distributed feature.
-</details>
-
-<details>
-<summary>Does it work with the ComfyUI desktop app?</summary>
-Currently, it is not compatible with the ComfyUI desktop app.
-</details>
-
-<details>
-<summary>Can I combine my RTX 5090 with a GTX 980 to get faster results?</summary>
-Yes, you can combine different GPUs, but performance is optimized when using similar GPUs. A significant performance imbalance between GPUs may cause bottlenecks. For upscaling, setting `static_distribution` to `false` allows the faster GPU to handle more processing, which can mitigate some bottlenecks. Note that this setting only applies to upscaling tasks.
-</details>
-
-<details>
-<summary>Does this work with cloud providers?</summary>
-Yes, it is compatible with cloud providers. Refer to the setup guides for detailed instructions.
-</details>
-
-<details>
-<summary>Can I make this work with my Docker setup?</summary>
-Yes, it is compatible with Docker setups, but you will need to configure your Docker environment yourself. Unfortunately, assistance with Docker configuration is not provided.
-</details>
-
----
-
 ## Disclaimer
 
 By using this software, you agree to be bound by the terms of this Disclaimer. The software is provided “as is” without any warranties, express or implied, including but not limited to merchantability, fitness for a particular purpose, or non-infringement. The developers and copyright holders are not liable for any claims, damages, or liabilities—whether in contract, tort, or otherwise—arising from the use, modification, distribution, or other dealings with the software.
