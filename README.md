@@ -1,5 +1,5 @@
 <div align="center">
-<img width="460" alt="distributed-logo" src="https://github.com/user-attachments/assets/e4604f86-f663-4672-b568-6f3df4282a1e" />
+<img width="460" src="https://github.com/user-attachments/assets/537d38cc-2e34-4527-bca7-0d79f4120cce" />
 <br><br>
 <a href="">📺Video Tutorial</a> |
 <a href="">📝Setup Guides</a> | 
