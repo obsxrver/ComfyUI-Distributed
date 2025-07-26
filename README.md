@@ -26,6 +26,11 @@
 - Static distribution for similar/same GPUs
 - Supports both single images and image batches
 
+#### Convenience
+- Automatically set up your local workers and easily add remote and cloud workers
+- Manage the workers through the UI panel
+- Easily convert any workflow to a distributed one, using no more than 2 nodes
+
 #### Management & Monitoring
 - **Worker Management** - Launch and monitor workers from the UI
 - **Network Support** - Use GPUs across different machines on your network
@@ -55,10 +60,6 @@
 
 ---
 
-
-
----
-
 ## Nodes
 
 ### Distributed Collector
@@ -71,6 +72,11 @@
 
 **Usage**: Connect to any seed input. Each worker automatically receives an offset seed to ensure randomisation. Alternatively, you can connect a seed node directly to this node's seed input, which will automatically handle seed offsetting across all workers.
 
+### Image Batch Divider
+> Divides image batches, used video
+
+**Usage**: Place after the Distributed Collector and set the divide_by to the number of GPUs you are using (including the master)
+  
 ### Ultimate SD Upscale Distributed
 > Distributed version of Ultimate SD Upscale that processes tiles across multiple GPUs, making upscaling much faster
 
@@ -79,22 +85,6 @@
 2. Feed the upscaled image into this node
 3. Configure tile settings
 4. Enable workers for fast processing
-
----
-
-## UI Features
-
-### Distributed GPU Panel
-
-The control centre for your distributed setup:
-
-| Feature | Description |
-|---------|-------------|
-| **Worker Status** | Real-time status indicators |
-| **Launch/Stop** | Control individual local workers |
-| **Clear Memory** | Free VRAM on all workers |
-| **Interrupt** | Stop current processing |
-| **Worker Logs** | View real-time logs |
 
 ---
 
@@ -122,24 +112,25 @@ The control centre for your distributed setup:
 
 ---
 
-## UI Panel Settings
+## FAQ
 
-The Distributed GPU panel includes several configuration options in the Settings section:
+Does it combine VRAM of multiple GPUs?
+No.
 
-### Debug Mode
-- **Description**: Enable detailed logging for troubleshooting and monitoring distributed operations
-- **Default**: Disabled
-- **Usage**: When enabled, detailed debug information is logged to the browser console, including worker status updates, job distribution details, and network communication logs
+Does it speed up the generation of a single image/video?
+No, it gives you more images/videos, rather than a faster single one. However, it does speed up the upscaling of a single image using the Ultimate SD Upscale Distributed.
 
-### Auto-launch Workers on Startup
-- **Description**: Automatically launch enabled local workers when ComfyUI starts
-- **Default**: Disabled  
-- **Usage**: When enabled, any local workers that are marked as "enabled" will be automatically launched in the background when the ComfyUI server starts, eliminating the need to launch each worker manually
+Does it work with ComfyUI desktop app?
+Not currently.
 
-### Stop Workers on Master Exit
-- **Description**: Automatically stop all managed local workers when the master ComfyUI instance shuts down
-- **Default**: Enabled
-- **Usage**: When enabled, ensures clean shutdown by stopping all UI-managed worker processes when the main ComfyUI server exits, preventing orphaned background processes
+Can I combine my RTX 5090 with a GTX 980 to get faster results?
+You can, but this works best with cards that are similar. If you have a large imbalance between GPUs, you will run into bottlenecks. Although you could still benefit from Ultimate SD Upscale Distributed with static_distribution set to false. This will allow the faster card to process more. Note this only works for upscaling.
+
+Does this work with cloud providers?
+Yes, see setup guides.
+
+Can I make this work with my Docker setup?
+Yes, it does work, but you need to know how to set up your Docker environment. I won't be able to assist you with that.
 
 ---
 
