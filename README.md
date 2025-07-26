@@ -78,31 +78,37 @@
 
 ---
 
-## Nodes
+## FAQ
 
-### Distributed Collector
-> Collects and combines results from distributed processing
+<details>
+<summary>Does it combine VRAM of multiple GPUs?</summary>
+No, it does not combine VRAM of multiple GPUs.
+</details>
 
-**Usage**: Place after any image generation node to enable distributed processing. Works automatically when workers are enabled.
+<details>
+<summary>Does it speed up the generation of a single image or video?</summary>
+No, it does not speed up the generation of a single image or video. Instead, it enables the generation of more images or videos simultaneously. However, it can speed up the upscaling of a single image when using the Ultimate SD Upscale Distributed feature.
+</details>
 
-### Distributed Seed
-> Ensures unique seeds across distributed workers for varied generations
+<details>
+<summary>Does it work with the ComfyUI desktop app?</summary>
+Currently, it is not compatible with the ComfyUI desktop app.
+</details>
 
-**Usage**: Connect to any seed input. Each worker automatically receives an offset seed to ensure randomisation. Alternatively, you can connect a seed node directly to this node's seed input, which will automatically handle seed offsetting across all workers.
+<details>
+<summary>Can I combine my RTX 5090 with a GTX 980 to get faster results?</summary>
+Yes, you can combine different GPUs, but performance is optimized when using similar GPUs. A significant performance imbalance between GPUs may cause bottlenecks. For upscaling, setting `static_distribution` to `false` allows the faster GPU to handle more processing, which can mitigate some bottlenecks. Note that this setting only applies to upscaling tasks.
+</details>
 
-### Image Batch Divider
-> Divides image batches, used video
+<details>
+<summary>Does this work with cloud providers?</summary>
+Yes, it is compatible with cloud providers. Refer to the setup guides for detailed instructions.
+</details>
 
-**Usage**: Place after the Distributed Collector and set the divide_by to the number of GPUs you are using (including the master)
-  
-### Ultimate SD Upscale Distributed
-> Distributed version of Ultimate SD Upscale that processes tiles across multiple GPUs, making upscaling much faster
-
-**Usage**:
-1. Upscale your image with a regular upscale model (ESRGAN, etc.)
-2. Feed the upscaled image into this node
-3. Configure tile settings
-4. Enable workers for fast processing
+<details>
+<summary>Can I make this work with my Docker setup?</summary>
+Yes, it is compatible with Docker setups, but you will need to configure your Docker environment yourself. Unfortunately, assistance with Docker configuration is not provided.
+</details>
 
 ---
 
