@@ -48,7 +48,7 @@
    ```bash
    git clone https://github.com/robertvoy/ComfyUI-Distributed.git
    ```
-
+   
 2. **Restart ComfyUI** - If you'll be using remote/cloud workers, add `--enable-cors-header` to your launch arguments on the master
 
 3. Read the [setup guide](https://github.com/robertvoy/ComfyUI-Distributed/blob/feature/cloud-workers/docs/worker-setup-guides.md) for adding workers
@@ -58,8 +58,9 @@
 ## Workflow Examples
 
 ### Basic Parallel Generation
-> [Download workflow](/workflows/distributed-txt2img.json)
+
 ![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
+> [Download workflow](/workflows/distributed-txt2img.json)
 
 1. Create your normal ComfyUI workflow
 2. Add **Distributed Seed** → connect to sampler's seed
