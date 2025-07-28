@@ -110,7 +110,7 @@ Yes, you can combine different GPUs, but performance is optimized when using sim
 
 <details>
 <summary>Does this work with cloud providers?</summary>
-Yes, it is compatible with cloud providers. Refer to the setup guides for detailed instructions.
+Yes, it is compatible with cloud providers. Refer to the [setup guides](https://github.com/robertvoy/ComfyUI-Distributed/blob/feature/cloud-workers/docs/worker-setup-guides.md) for detailed instructions.
 </details>
 
 <details>
