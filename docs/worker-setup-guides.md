@@ -50,7 +50,7 @@
 
 **On the Main Machine:**
 1. Launch a Cloudflare tunnel
-   - Download from here `https://github.com/cloudflare/cloudflared/releases/tag/2025.7.0`
+   - Download from here `https://github.com/cloudflare/cloudflared/releases`
 	- Then run for example: `cloudflared-windows-amd64.exe tunnel --url http://localhost:8188`
 2. Copy the Cloudflare address
 3. **Open** the Distributed GPU panel (sidebar on the left).
@@ -75,8 +75,8 @@
   
 **On the Main Machine:**
 1. **Launch** a Cloudflare tunnel on your local machine.
-      - Download from here `https://github.com/cloudflare/cloudflared/releases/tag/2025.7.0`
-	   - For example: `cloudflared-windows-amd64.exe tunnel --url http://localhost:8188`
+   - Download from here `https://github.com/cloudflare/cloudflared/releases`
+   - For example: `cloudflared-windows-amd64.exe tunnel --url http://localhost:8188`
 2. **Copy** the Cloudflare address
 3. **Open** the Distributed GPU panel (sidebar on the left).
 4. **Edit** the Master's host address and replace it with the Cloudflare address.
