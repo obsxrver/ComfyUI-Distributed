@@ -59,6 +59,7 @@
 
 ### Basic Parallel Generation
 Generate multiple images in the time it takes to generate one. Each worker uses a different seed.
+
 ![Clipboard Image (6)](https://github.com/user-attachments/assets/9598c94c-d9b4-4ccf-ab16-a21398220aeb)
 
 > [Download workflow](/workflows/distributed-txt2img.json)
