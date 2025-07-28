@@ -70,7 +70,8 @@
 
 ### Parallel WAN Generation
 
-![Clipboard Image (2)](https://github.com/user-attachments/assets/ba7536e7-675c-44d7-9f3f-bf11a2216cd6)
+![Clipboard Image (5)](https://github.com/user-attachments/assets/5382b845-833b-43b7-b238-a91c5579581a)
+
 > [Download workflow](/workflows/distributed-wan.json)
 
 1. Open your WAN ComfyUI workflow
@@ -84,7 +85,7 @@
 
 ### Distributed Upscaling
 
-![Clipboard Image (2)](https://github.com/user-attachments/assets/ec2548d0-1fc7-4705-801f-3270d720cfce)
+![Clipboard Image (3)](https://github.com/user-attachments/assets/ffb57a0d-7b75-4497-96d2-875d60865a1a)
 
 > [Download workflow](/workflows/distributed-txt2img.json)
 
