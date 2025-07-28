@@ -2,12 +2,14 @@
 
 This guide will walk you through creating a shell script to automatically download the necessary models for your ComfyUI workflow, leveraging an advanced Large Language Model (LLM).
 
-1. Make sure you launched the Pod with these Environment Variables: CIVITAI_API_TOKEN ([get your token here](https://civitai.com/user/account)) and HF_API_TOKEN ([get your token here](https://huggingface.co/settings/tokens))
-2. Export your workflow as an API workflow
-3. Copy the below prompt and upload the API workflow to a LLM that has access to the internet
-4. Review (make sure all downloads are correct) and save the output from the LLM as a .sh file
-5. Upload it onto your Runpod instance
-6. Run the file. For example: `./download_comfyui_models.sh`
+1. Launched the Pod with these Environment Variables:
+  - CIVITAI_API_TOKEN ([get your token here](https://civitai.com/user/account))
+  - HF_API_TOKEN ([get your token here](https://huggingface.co/settings/tokens))
+3. In ComfyUI, export your workflow as an API workflow
+4. Copy the below prompt and upload the API workflow to a LLM **that has access to the internet**
+5. Review the LLMs output to make sure all download links are correct and save it as a .sh file
+6. Upload it onto your Runpod instance
+7. Run the file. For example: `./download_comfyui_models.sh`
 
 ```
 Create a sh script that will download the models from this workflow into the correct folders. For reference, these are the paths:
