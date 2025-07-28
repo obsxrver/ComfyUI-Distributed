@@ -87,7 +87,7 @@ Generate multiple videos in the time it takes to generate one. Each worker uses 
 8. Run the workflow!
 
 ### Distributed Upscaling
-Distributed tiled upscaling: Accelerate the process by distributing tiles across multiple workers, with speed scaling as you add more GPUs.
+Accelerate the process by distributing tiles across multiple workers, with speed scaling as you add more GPUs.
 
 ![Clipboard Image (3)](https://github.com/user-attachments/assets/ffb57a0d-7b75-4497-96d2-875d60865a1a)
 
