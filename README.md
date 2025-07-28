@@ -62,7 +62,7 @@
 ![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
 > [Download workflow](/workflows/distributed-txt2img.json)
 
-1. Create your normal ComfyUI workflow
+1. Open your ComfyUI workflow
 2. Add **Distributed Seed** → connect to sampler's seed
 3. Add **Distributed Collector** → after VAE Decode
 4. Enable workers in the UI
@@ -72,6 +72,15 @@
 
 ![Clipboard Image (1)](https://github.com/user-attachments/assets/de2ee023-4650-4164-885e-404b3cedd67e)
 > [Download workflow](/workflows/distributed-wan.json)
+
+1. Open your WAN ComfyUI workflow
+2. Add **Distributed Seed** → connect to sampler's seed
+3. Add **Distributed Collector** → after VAE Decode
+4. Add **Image Batch Divider** → after Distributed Collector
+5. Set the `divide_by` to the number of GPUs you have available
+> For example: if you have a master and 2x workers, set it to 3
+7. Enable workers in the UI
+8. Run the workflow!
 
 ### Distributed Upscaling
 
