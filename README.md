@@ -58,7 +58,7 @@
 ## Workflow Examples
 
 ### Basic Parallel Generation
-
+> Generate multiple images in the time it takes to generate one. Each worker uses a different seed.
 ![Clipboard Image (6)](https://github.com/user-attachments/assets/9598c94c-d9b4-4ccf-ab16-a21398220aeb)
 
 > [Download workflow](/workflows/distributed-txt2img.json)
@@ -70,7 +70,7 @@
 5. Run the workflow!
 
 ### Parallel WAN Generation
-
+> Generate multiple videos in the time it takes to generate one. Each worker uses a different seed.
 ![Clipboard Image (5)](https://github.com/user-attachments/assets/5382b845-833b-43b7-b238-a91c5579581a)
 
 > [Download workflow](/workflows/distributed-wan.json)
@@ -85,7 +85,7 @@
 8. Run the workflow!
 
 ### Distributed Upscaling
-
+> Distributed tiled upscaling: Accelerate the process by distributing tiles across multiple workers, with speed scaling as you add more GPUs.
 ![Clipboard Image (3)](https://github.com/user-attachments/assets/ffb57a0d-7b75-4497-96d2-875d60865a1a)
 
 > [Download workflow](/workflows/distributed-txt2img.json)
