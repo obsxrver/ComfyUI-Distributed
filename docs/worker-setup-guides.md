@@ -39,10 +39,10 @@
 1. Register a [Runpod](https://get.runpod.io/0bw29uf3ug0p) account.
 2. On Runpod, go to Storage > New Network Volume and create a volume which will store the models you need.
 3. Now go to Pods and find a suitable GPU for your workflows. 
-> To use the ComfyUI-Distributed-Pod, you will need to filter instances by CUDA 12.8.
+> To use the ComfyUI-Distributed-Pod template, you will need to filter instances by CUDA 12.8.
 4. Choose the `ComfyUI-Distributed-Pod` template and make sure your network drive is mounted.
 5. Launch your pod.
-6. Access your pod using JupyterLab.
+6. Access your pod using JupyterLabs.
 7. Download models into /workspaces/ComfyUI/models/ (these will remain on your network drive even after you terminate the pod).
 > You can use [this guide](model-download-script.md) to make this process easy for you. It will generate a shell script that will automatically download the models you need for a given workflow.
 8. If using your own template, make sure you launch ComfyUI with the `--enable-cors-header` argument and you git clone ComfyUI-Distributed into custom_nodes. ⚠️ **Required!**
