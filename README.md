@@ -5,6 +5,7 @@
 <a href="/docs/worker-setup-guides.md"><img src="https://img.shields.io/badge/Setup_Guides-grey?style=flat&logo=gitbook&logoColor=white" alt="Setup Guides"></a>
 <a href="/workflows"><img src="https://img.shields.io/badge/Workflows-grey?style=flat&logo=json&logoColor=white" alt="Workflows"></a>
 <a href="https://buymeacoffee.com/robertvoy"><img src="https://img.shields.io/badge/Donation-grey?style=flat&logo=buymeacoffee&logoColor=white" alt="Donation"></a>
+<a href="https://x.com/robertvoy3D"><img src="https://img.shields.io/twitter/follow/robertvoy3D" alt="Twitter"></a>
 <br><br>
 </div>
 
