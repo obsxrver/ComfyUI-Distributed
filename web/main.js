@@ -945,6 +945,16 @@ class DistributedExtension {
                         
                         this.log(`Auto-populated ${newWorkers.length} workers and saved config`, "info");
                         
+                        // Show success notification
+                        if (app.extensionManager?.toast) {
+                            app.extensionManager.toast.add({
+                                severity: "success",
+                                summary: "Workers Auto-populated",
+                                detail: `Automatically created ${newWorkers.length} workers based on detected CUDA devices`,
+                                life: 5000
+                            });
+                        }
+                        
                         // Reload the config to include the new workers
                         await this.loadConfig();
                     } else {

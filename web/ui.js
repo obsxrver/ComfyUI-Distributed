@@ -697,9 +697,9 @@ export class DistributedUI {
         // Create powered by Runpod text (initially hidden)
         const runpodText = document.createElement("a");
         runpodText.id = `runpod-text-${worker.id}`;
-        runpodText.href = "https://www.runpod.io";
+        runpodText.href = "https://get.runpod.io/0bw29uf3ug0p";
         runpodText.target = "_blank";
-        runpodText.textContent = "Deploy cloud worker with Runpod";
+        runpodText.textContent = "Deploy Cloud Worker with Runpod";
         runpodText.style.cssText = "font-size: 12px; color: #4a90e2; text-decoration: none; margin-top: 4px; display: none; cursor: pointer;";
         
         // Store the onchange function to be assigned later
