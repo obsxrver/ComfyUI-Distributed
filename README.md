@@ -58,9 +58,8 @@
 ## Workflow Examples
 
 ### Basic Parallel Generation
-
-![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
 > [Download workflow](/workflows/distributed-txt2img.json)
+![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
 
 1. Create your normal ComfyUI workflow
 2. Add **Distributed Seed** → connect to sampler's seed
