@@ -2,7 +2,7 @@
 <img width="320" src="https://github.com/user-attachments/assets/537d38cc-2e34-4527-bca7-0d79f4120cce" />
 <br><br>
 <a href="">📺Video Tutorial</a> |
-<a href="">📝Setup Guides</a> | 
+<a href="/docs/worker-setup-guides.md">📝Setup Guides</a> | 
 <a href="https://github.com/robertvoy/ComfyUI-Distributed/tree/main/workflows">⚙️Workflows</a> |
 <a href="https://buymeacoffee.com/robertvoy">🎁Donation</a> 
 <br><br>
@@ -18,19 +18,16 @@
 
 #### Parallel Workflow Processing
 - Run workflows on multiple GPUs simultaneously with varied seeds
-- Generate multiple outputs in the time of one
 - Scale output with more workers
 - Supports images and videos
 
 #### Distributed Upscaling
 - Accelerate Ultimate SD Upscale by distributing tiles across GPUs
-- Intelligent distribution for asymmetric setups
-- Static distribution for similar GPUs
+- Intelligent distribution
 - Handles single images and batches
 
 #### Convenience
 - Auto-setup local workers; easily add remote/cloud ones
-- Manage workers via UI panel
 - Convert any workflow to distributed with 2 nodes
 - JSON configuration with UI controls
 
@@ -53,6 +50,8 @@
    ```
 
 2. **Restart ComfyUI** - If you'll be using remote/cloud workers, add `--enable-cors-header` to your launch arguments on the master
+
+3. Read the [setup guide](https://github.com/robertvoy/ComfyUI-Distributed/blob/feature/cloud-workers/docs/worker-setup-guides.md) for adding workers
 
 ---
 
