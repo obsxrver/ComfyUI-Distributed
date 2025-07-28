@@ -3,7 +3,7 @@
 <br><br>
 <a href="">📺Video Tutorial</a> |
 <a href="/docs/worker-setup-guides.md">📝Setup Guides</a> | 
-<a href="https://github.com/robertvoy/ComfyUI-Distributed/tree/main/workflows">⚙️Workflows</a> |
+<a href="/workflows">⚙️Workflows</a> |
 <a href="https://buymeacoffee.com/robertvoy">🎁Donation</a> 
 <br><br>
 </div>
@@ -26,7 +26,7 @@
 - Intelligent distribution
 - Handles single images and batches
 
-#### Convenience
+#### Ease of Use
 - Auto-setup local workers; easily add remote/cloud ones
 - Convert any workflow to distributed with 2 nodes
 - JSON configuration with UI controls
@@ -60,6 +60,7 @@
 ### Basic Parallel Generation
 
 ![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
+> [Download workflow](/workflows/distributed-txt2img.json)
 
 1. Create your normal ComfyUI workflow
 2. Add **Distributed Seed** → connect to sampler's seed
@@ -69,9 +70,13 @@
 
 ### Parallel WAN Generation
 
+> [Download workflow](/workflows/distributed-wan.json)
+> 
 ### Distributed Upscaling
 
 ![Clipboard Image (2)](https://github.com/user-attachments/assets/ec2548d0-1fc7-4705-801f-3270d720cfce)
+
+> [Download workflow](/workflows/distributed-txt2img.json)
 
 1. Load your image
 2. Upscale with ESRGAN or similar
