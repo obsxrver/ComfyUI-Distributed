@@ -70,7 +70,7 @@
 
 ### Parallel WAN Generation
 
-![Clipboard Image](https://github.com/user-attachments/assets/794c3928-12c1-4522-82fb-f6a022b9e9ab)
+![Clipboard Image (1)](https://github.com/user-attachments/assets/de2ee023-4650-4164-885e-404b3cedd67e)
 > [Download workflow](/workflows/distributed-wan.json)
 
 ### Distributed Upscaling
