@@ -58,7 +58,7 @@
 ## Workflow Examples
 
 ### Basic Parallel Generation
-Generate multiple images in the time it takes to generate one. Each worker uses a different seed.
+Generate multiple images in the time it takes to generate one. Each worker uses a different seed. Works with any workflow that outputs images.
 
 ![Clipboard Image (6)](https://github.com/user-attachments/assets/9598c94c-d9b4-4ccf-ab16-a21398220aeb)
 
@@ -71,7 +71,7 @@ Generate multiple images in the time it takes to generate one. Each worker uses 
 5. Run the workflow!
 
 ### Parallel WAN Generation
-Generate multiple videos in the time it takes to generate one. Each worker uses a different seed.
+Generate multiple videos in the time it takes to generate one. Each worker uses a different seed. Works with any workflow that outputs images, including video frames.
 
 ![Clipboard Image (5)](https://github.com/user-attachments/assets/5382b845-833b-43b7-b238-a91c5579581a)
 
