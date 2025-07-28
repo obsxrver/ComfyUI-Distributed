@@ -70,7 +70,7 @@
 
 ### Parallel WAN Generation
 
-![Clipboard Image (1)](https://github.com/user-attachments/assets/de2ee023-4650-4164-885e-404b3cedd67e)
+![Clipboard Image (2)](https://github.com/user-attachments/assets/ba7536e7-675c-44d7-9f3f-bf11a2216cd6)
 > [Download workflow](/workflows/distributed-wan.json)
 
 1. Open your WAN ComfyUI workflow
