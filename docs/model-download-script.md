@@ -1,4 +1,4 @@
-## Prompt for LLM - Automating ComfyUI Model Downloads
+## Automating ComfyUI Model Downloads
 
 This guide will walk you through creating a shell script to automatically download the necessary models for your ComfyUI workflow, leveraging an advanced Large Language Model (LLM).
 
