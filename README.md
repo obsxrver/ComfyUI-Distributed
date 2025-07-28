@@ -2,8 +2,8 @@
 <img width="320" src="https://github.com/user-attachments/assets/537d38cc-2e34-4527-bca7-0d79f4120cce" />
 <br><br>
 <a href="">📺Video Tutorial</a> |
-<a href="">📝Setup Guides</a> | 
-<a href="https://github.com/robertvoy/ComfyUI-Distributed/tree/main/workflows">⚙️Workflows</a> |
+<a href="/docs/worker-setup-guides.md">📝Setup Guides</a> | 
+<a href="/workflows">⚙️Workflows</a> |
 <a href="https://buymeacoffee.com/robertvoy">🎁Donation</a> 
 <br><br>
 </div>
@@ -18,19 +18,16 @@
 
 #### Parallel Workflow Processing
 - Run workflows on multiple GPUs simultaneously with varied seeds
-- Generate multiple outputs in the time of one
 - Scale output with more workers
 - Supports images and videos
 
 #### Distributed Upscaling
 - Accelerate Ultimate SD Upscale by distributing tiles across GPUs
-- Intelligent distribution for asymmetric setups
-- Static distribution for similar GPUs
+- Intelligent distribution
 - Handles single images and batches
 
-#### Convenience
+#### Ease of Use
 - Auto-setup local workers; easily add remote/cloud ones
-- Manage workers via UI panel
 - Convert any workflow to distributed with 2 nodes
 - JSON configuration with UI controls
 
@@ -39,7 +36,7 @@
 ## Requirements
 
 - ComfyUI
-> Note: Desktop app not supported currently
+> Note: Desktop app not currently supported
 - Multiple GPUs
 - That's it
 
@@ -51,8 +48,10 @@
    ```bash
    git clone https://github.com/robertvoy/ComfyUI-Distributed.git
    ```
-
+   
 2. **Restart ComfyUI** - If you'll be using remote/cloud workers, add `--enable-cors-header` to your launch arguments on the master
+
+3. Read the [setup guide](https://github.com/robertvoy/ComfyUI-Distributed/blob/feature/cloud-workers/docs/worker-setup-guides.md) for adding workers
 
 ---
 
@@ -61,6 +60,7 @@
 ### Basic Parallel Generation
 
 ![Clipboard Image (1)](https://github.com/user-attachments/assets/e8e46d97-d698-4c18-b4e5-1e1a2f4f7da3)
+> [Download workflow](/workflows/distributed-txt2img.json)
 
 1. Create your normal ComfyUI workflow
 2. Add **Distributed Seed** → connect to sampler's seed
@@ -70,9 +70,13 @@
 
 ### Parallel WAN Generation
 
+> [Download workflow](/workflows/distributed-wan.json)
+> 
 ### Distributed Upscaling
 
 ![Clipboard Image (2)](https://github.com/user-attachments/assets/ec2548d0-1fc7-4705-801f-3270d720cfce)
+
+> [Download workflow](/workflows/distributed-txt2img.json)
 
 1. Load your image
 2. Upscale with ESRGAN or similar
@@ -106,7 +110,7 @@ Yes, you can combine different GPUs, but performance is optimized when using sim
 
 <details>
 <summary>Does this work with cloud providers?</summary>
-Yes, it is compatible with cloud providers. Refer to the setup guides for detailed instructions.
+Yes, it is compatible with cloud providers. Refer to the [setup guides](https://github.com/robertvoy/ComfyUI-Distributed/blob/feature/cloud-workers/docs/worker-setup-guides.md) for detailed instructions.
 </details>
 
 <details>
@@ -118,11 +122,7 @@ Yes, it is compatible with Docker setups, but you will need to configure your Do
 
 ## Disclaimer
 
-By using this software, you agree to be bound by the terms of this Disclaimer. The software is provided “as is” without any warranties, express or implied, including but not limited to merchantability, fitness for a particular purpose, or non-infringement. The developers and copyright holders are not liable for any claims, damages, or liabilities—whether in contract, tort, or otherwise—arising from the use, modification, distribution, or other dealings with the software.
-
-Users are solely responsible for ensuring their use of the software, including any content it generates, complies with all applicable laws and regulations in their jurisdiction. The developers are not responsible for any legal violations resulting from user actions.
-
-Additionally, users are responsible for the security and integrity of their networks, including protecting against unauthorized access, hacking, data breaches, or loss. The developers assume no liability for any damages, losses, or incidents arising from improper configuration, misuse, or external threats to user environments.
+This software is provided "as is" without any warranties, express or implied, including merchantability, fitness for a particular purpose, or non-infringement. The developers and copyright holders are not liable for any claims, damages, or liabilities arising from the use, modification, or distribution of the software. Users are solely responsible for ensuring compliance with applicable laws and regulations and for securing their networks against unauthorized access, hacking, data breaches, or loss. The developers assume no liability for any damages or incidents resulting from misuse, improper configuration, or external threats.
 
 ---
 
