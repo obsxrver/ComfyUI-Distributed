@@ -62,6 +62,8 @@
      - **Port**: 443
    - **Save** the remote worker configuration.
 
+---
+
 ### Deploy Cloud Worker on Other Platforms
 
 **On the Cloud Worker machine:**
