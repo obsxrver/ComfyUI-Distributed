@@ -66,7 +66,7 @@
 5. Deploy your pod.
 6. Connect to your pod using JupyterLabs. This gives us access to the pod's file system.
 7. Download models into /workspaces/ComfyUI/models/ (these will remain on your network drive even after you terminate the pod).
-> ℹ️ Use [this guide](model-download-script.md) to make this process easy for you. It will generate a shell script that will automatically download the models you need for a given workflow.
+> ℹ️ Use [this guide](model-download-script.md) to make this process easy. It will generate a shell script that automatically downloads the models for a given workflow.
 9. Access ComfyUI through the Runpod URL.
 10. Download any additional custom nodes you need using the ComfyUI Manager.
 
