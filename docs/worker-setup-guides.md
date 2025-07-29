@@ -1,4 +1,4 @@
-## Overview
+## ComfyUI Distributed Worker Setup Guide
 
 ComfyUI-Distributed allows you to distribute your workflows across multiple GPUs, whether they're in the same machine, on your local network, or in the cloud.
 
