@@ -50,7 +50,8 @@
    git clone https://github.com/robertvoy/ComfyUI-Distributed.git
    ```
    
-2. **Restart ComfyUI** - If you'll be using remote/cloud workers, add `--enable-cors-header` to your launch arguments on the master
+2. **Restart ComfyUI**
+   - If you'll be using remote/cloud workers, add `--enable-cors-header` to your launch arguments on the master
 
 3. Read the [setup guide](https://github.com/robertvoy/ComfyUI-Distributed/blob/feature/cloud-workers/docs/worker-setup-guides.md) for adding workers
 
