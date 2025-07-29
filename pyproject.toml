@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-Distributed"
 description = "ComfyUI extension that enables multi-GPU processing locally and remotely "
-version = "1.0.2"
+version = "1.0.3"
 license = {file = "LICENSE"}
 dependencies  = []
 
