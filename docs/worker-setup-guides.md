@@ -63,7 +63,7 @@ ComfyUI-Distributed allows you to distribute your workflows across multiple GPUs
 7. Access your pod using JupyterLabs.
 8. Download models into /workspaces/ComfyUI/models/ (these will remain on your network drive even after you terminate the pod).
 > You can use [this guide](model-download-script.md) to make this process easy for you. It will generate a shell script that will automatically download the models you need for a given workflow.
-8. If using your own template, make sure you launch ComfyUI with the `--enable-cors-header` argument and you git clone ComfyUI-Distributed into custom_nodes. ⚠️ **Required!**
+8. If using your own template, make sure you launch ComfyUI with the `--enable-cors-header` argument and you `git clone ComfyUI-Distributed` into custom_nodes. ⚠️ **Required!**
 9. Download any additional custom nodes using the ComfyUI Manager.
 
 **On the Main Machine:**
