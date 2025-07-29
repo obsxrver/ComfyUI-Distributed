@@ -906,7 +906,7 @@ class DistributedExtension {
                         const worker = {
                             id: crypto.randomUUID(),
                             name: `Worker ${workerNum}`,
-                            host: "localhost",
+                            host: isRunpod ? null : "localhost",
                             port: 8189 + portOffset,
                             cuda_device: i,
                             enabled: true,
