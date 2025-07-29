@@ -81,11 +81,11 @@ ComfyUI Distributed allows you to distribute your workflows across multiple GPUs
 4. **Open** the Distributed GPU panel (sidebar on the left).
 5. **Edit** the Master's settings to change the host address to the Cloudflare address.
 6. **Click** "Add Worker."
-   - **Choose** "Cloud".
-   - **Configure** your cloud worker:
-     - **Host**: The Runpod address
-     - **Port**: 443
-   - **Save** the remote worker configuration.
+7. **Choose** "Cloud".
+8. **Configure** your cloud worker:
+	- **Host**: The Runpod address
+	- **Port**: 443
+9. **Save** the remote worker configuration.
 
 ---
 
