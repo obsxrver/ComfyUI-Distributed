@@ -5,11 +5,11 @@ This guide will walk you through creating a shell script to automatically downlo
 1. Launched the Pod with these Environment Variables:
   - CIVITAI_API_TOKEN ([get your token here](https://civitai.com/user/account))
   - HF_API_TOKEN ([get your token here](https://huggingface.co/settings/tokens))
-3. In ComfyUI, export your workflow as an API workflow
-4. Copy the below prompt and upload the API workflow to a LLM **that has access to the internet**
+2. In ComfyUI, export your workflow as an API workflow
+3. Copy the below prompt and upload the API workflow to a LLM **that has access to the internet**
 ```
 Create a sh script that will download the models from this workflow into the correct folders. For reference, these are the paths:
-comfyui:
+
 base_path: /workspace/ComfyUI
 checkpoints: models/checkpoints/
 clip: models/clip/
@@ -25,9 +25,32 @@ text_encoders: models/text_encoders/
 unet: models/unet/
 upscale_models: models/upscale_models/
 vae: models/vae/
+
+---
+
+Important:
 Make sure you find the correct URLs for the models online.
-Use comfy cli to download the models: comfy model download --url <URL> ?[--relative-path <PATH>]
+Use comfy cli to download the models: `comfy model download --url <URL> [--relative-path <PATH>] [--set-civitai-api-token <TOKEN>] [--set-hf-api-token <TOKEN>]`
+Make sure you add `--set-civitai-api-token $CIVITAI_API_TOKEN` for CivitAI download and `--set-hf-api-token $HF_API_TOKEN` for Hugging Face downloads.
+
+---
+
+Example:
+
+#!/bin/bash
+
+# Download from CivitAI
+comfy model download --url https://civitai.com/api/download/models/1759168 --relative-path /workspace/ComfyUI/models/checkpoints --set-civitai-api-token $CIVITAI_API_TOKEN
+
+# Download model from Hugging Face
+comfy model download --url https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors --relative-path /workspace/ComfyUI/models/unet --set-hf-api-token $HF_API_TOKEN
+
+# If a model in the workflow was in a subfolder
+comfy model download --url https://civitai.com/api/download/models/1759168 --relative-path /workspace/ComfyUI/models/checkpoints/SDXL --set-civitai-api-token $CIVITAI_API_TOKEN
+
 ```
-5. Review the LLMs output to make sure all download links are correct and save it as a .sh file
-6. Upload it onto your Runpod instance
-7. Run the file. For example: `./download_comfyui_models.sh`
+4. Review the LLMs output to make sure all download links are correct and save it as a .sh file
+5. Upload it onto your Runpod instance, into `/workspace`
+6. Then run these commands:
+   - `chmod 755 /workspace/download_comfyui_models.sh`
+   - `/workspace/download_comfyui_models.sh`
