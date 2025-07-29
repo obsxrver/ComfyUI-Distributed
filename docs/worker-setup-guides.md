@@ -38,14 +38,15 @@ ComfyUI-Distributed allows you to distribute your workflows across multiple GPUs
 3. **Open** the ComfyUI port (e.g., 8188) and any additional worker ports (e.g., 8189, 8190) in the firewall.
   
 **On the Main Machine:**
-1. **Open** the Distributed GPU panel (sidebar on the left).
-2. **Click** "Add Worker."
-3. **Choose** "Remote".
-4. **Configure** your remote worker:
+1. **Launch** ComfyUI with `--enable-cors-header` launch argument.
+2. **Open** the Distributed GPU panel (sidebar on the left).
+3. **Click** "Add Worker."
+4. **Choose** "Remote".
+5. **Configure** your remote worker:
    - **Name**: A descriptive name for the worker (e.g., "Server Rack GPU 0")
    - **Host**: The remote worker's IP address.
    - **Port**: The port number used when launching ComfyUI on the remote master/worker (e.g., 8188).
-5. **Save** the remote worker configuration.
+6. **Save** the remote worker configuration.
   
 ## Cloud workers
 > ComfyUI instances running on a cloud service like [Runpod](https://get.runpod.io/0bw29uf3ug0p). 
@@ -71,8 +72,9 @@ ComfyUI-Distributed allows you to distribute your workflows across multiple GPUs
 	- Then run, for example: `cloudflared-windows-amd64.exe tunnel --url http://localhost:8188`
 > Cloudflare tunnels create secure connections without exposing ports directly to the internet
 2. Copy the Cloudflare address
-3. **Open** the Distributed GPU panel (sidebar on the left).
-4. **Edit** the Master's host address and replace it with the Cloudflare address.
+3. **Launch** ComfyUI with `--enable-cors-header` launch argument.
+4. **Open** the Distributed GPU panel (sidebar on the left).
+5. **Edit** the Master's host address and replace it with the Cloudflare address.
    - **Click** "Add Worker."
    - **Choose** "Cloud".
    - **Configure** your cloud worker:
@@ -98,11 +100,12 @@ ComfyUI-Distributed allows you to distribute your workflows across multiple GPUs
    - Download from here: [https://github.com/cloudflare/cloudflared/releases](https://github.com/cloudflare/cloudflared/releases)
    - Then run, for example: `cloudflared-windows-amd64.exe tunnel --url http://localhost:8188`
 2. **Copy** the Cloudflare address
-3. **Open** the Distributed GPU panel (sidebar on the left).
-4. **Edit** the Master's host address and replace it with the Cloudflare address.
-5. **Click** "Add Worker."
-6. **Choose** "Cloud".
-7. **Configure** your cloud worker:
+3. **Launch** ComfyUI with `--enable-cors-header` launch argument.
+4. **Open** the Distributed GPU panel (sidebar on the left).
+5. **Edit** the Master's host address and replace it with the Cloudflare address.
+6. **Click** "Add Worker."
+7. **Choose** "Cloud".
+8. **Configure** your cloud worker:
    - **Host**: The remote worker's IP address/domain
    - **Port**: 443
-8. **Save** the remote worker configuration.
+9. **Save** the remote worker configuration.
