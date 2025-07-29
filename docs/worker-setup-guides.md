@@ -1,6 +1,6 @@
 ## ComfyUI Distributed Worker Setup Guide
 
-ComfyUI-Distributed allows you to distribute your workflows across multiple GPUs, whether they're in the same machine, on your local network, or in the cloud.
+ComfyUI Distributed allows you to distribute your workflows across multiple GPUs, whether they're in the same machine, on your local network, or in the cloud.
 
 **Master**: The main ComfyUI instance that coordinates and distributes work. This is where you load workflows, manage the queue, and view results.
 
@@ -54,28 +54,33 @@ ComfyUI-Distributed allows you to distribute your workflows across multiple GPUs
 ### Deploy Cloud Worker on Runpod
 
 **On Runpod:**
+> If using your own template, make sure you launch ComfyUI with the `--enable-cors-header` argument and you `git clone ComfyUI-Distributed` into custom_nodes. ⚠️ **Required!**
+
 1. Register a [Runpod](https://get.runpod.io/0bw29uf3ug0p) account.
 2. On Runpod, go to Storage > New Network Volume and create a volume that will store the models you need. Start with 40 GB, you can always add more later.
-3. Now go to Pods and find a suitable GPU for your workflows. 
-4. Choose the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=ak218p52) template and make sure your network drive is mounted.
-> To use the ComfyUI Distributed Pod template, you will need to filter instances by CUDA 12.8.
-6. Launch your pod.
-7. Access your pod using JupyterLabs.
-8. Download models into /workspaces/ComfyUI/models/ (these will remain on your network drive even after you terminate the pod).
-> You can use [this guide](model-download-script.md) to make this process easy for you. It will generate a shell script that will automatically download the models you need for a given workflow.
-8. If using your own template, make sure you launch ComfyUI with the `--enable-cors-header` argument and you `git clone ComfyUI-Distributed` into custom_nodes. ⚠️ **Required!**
-9. Download any additional custom nodes using the ComfyUI Manager.
+3. Use the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=ak218p52) template and make sure your network drive is mounted.
+> ⚠️ To use the ComfyUI Distributed Pod template, you will need to filter instances by CUDA 12.8.
+4. Configure the Pod Environment Variables:
+	- CIVITAI_API_TOKEN: [get your token here](https://civitai.com/user/account)
+	- HF_API_TOKEN: [get your token here](https://huggingface.co/settings/tokens)
+	- SAGE_ATTENTION: optional optimisation (set to true/false)
+5. Launch your pod.
+6. Connect to your pod using JupyterLabs. This gives us access to the pod's file system.
+7. Download models into /workspaces/ComfyUI/models/ (these will remain on your network drive even after you terminate the pod).
+> ℹ️ Use [this guide](model-download-script.md) to make this process easy for you. It will generate a shell script that will automatically download the models you need for a given workflow.
+9. Access ComfyUI through the Runpod proxy URL.
+10. Download any additional custom nodes you need using the ComfyUI Manager.
 
 **On the Main Machine:**
-1. Launch a Cloudflare tunnel
+1. **Launch** a Cloudflare tunnel.
    - Download from here: [https://github.com/cloudflare/cloudflared/releases](https://github.com/cloudflare/cloudflared/releases)
 	- Then run, for example: `cloudflared-windows-amd64.exe tunnel --url http://localhost:8188`
-> Cloudflare tunnels create secure connections without exposing ports directly to the internet
-2. Copy the Cloudflare address
+> ℹ️ Cloudflare tunnels create secure connections without exposing ports directly to the internet and are required for Cloud Workers.
+2. **Copy** the Cloudflare address
 3. **Launch** ComfyUI with `--enable-cors-header` launch argument.
 4. **Open** the Distributed GPU panel (sidebar on the left).
-5. **Edit** the Master's host address and replace it with the Cloudflare address.
-   - **Click** "Add Worker."
+5. **Edit** the Master's settings to change the host address to the Cloudflare address.
+6. **Click** "Add Worker."
    - **Choose** "Cloud".
    - **Configure** your cloud worker:
      - **Host**: The Runpod address
