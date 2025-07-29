@@ -58,17 +58,18 @@ ComfyUI Distributed allows you to distribute your workflows across multiple GPUs
 
 1. Register a [Runpod](https://get.runpod.io/0bw29uf3ug0p) account.
 2. On Runpod, go to Storage > New Network Volume and create a volume that will store the models you need. Start with 40 GB, you can always add more later.
-3. Use the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=ak218p52) template and make sure your network drive is mounted.
-> ⚠️ To use the ComfyUI Distributed Pod template, you will need to filter instances by CUDA 12.8.
-4. Configure the Pod Environment Variables:
+3. Use the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=ak218p52) template.
+4. Make sure your Network Volume is mounted and choose a suitable GPU.
+> ⚠️ To use the ComfyUI Distributed Pod template, you will need to filter instances by CUDA 12.8
+6. Press Edit Template to configure the pod's Environment Variables:
 	- CIVITAI_API_TOKEN: [get your token here](https://civitai.com/user/account)
 	- HF_API_TOKEN: [get your token here](https://huggingface.co/settings/tokens)
 	- SAGE_ATTENTION: optional optimisation (set to true/false)
-5. Launch your pod.
+5. Deploy your pod.
 6. Connect to your pod using JupyterLabs. This gives us access to the pod's file system.
 7. Download models into /workspaces/ComfyUI/models/ (these will remain on your network drive even after you terminate the pod).
 > ℹ️ Use [this guide](model-download-script.md) to make this process easy for you. It will generate a shell script that will automatically download the models you need for a given workflow.
-9. Access ComfyUI through the Runpod proxy URL.
+9. Access ComfyUI through the Runpod URL.
 10. Download any additional custom nodes you need using the ComfyUI Manager.
 
 **On the Main Machine:**
