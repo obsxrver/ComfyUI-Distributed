@@ -49,8 +49,8 @@ comfy model download --url https://huggingface.co/black-forest-labs/FLUX.1-dev/r
 comfy model download --url https://civitai.com/api/download/models/1759168 --relative-path /workspace/ComfyUI/models/checkpoints/SDXL --set-civitai-api-token $CIVITAI_API_TOKEN
 
 ```
-4. Review the LLMs output to make sure all download links are correct and save it as a .sh file
+4. Review the LLMs output to make sure all download links are correct and save it as a .sh file, for example `download_models.sh`
 5. Upload it onto your Runpod instance, into `/workspace`
 6. Then run these commands:
-   - `chmod 755 /workspace/download_comfyui_models.sh`
-   - `/workspace/download_comfyui_models.sh`
+   - `chmod 755 /workspace/download_models.sh`
+   - `/workspace/download_models.sh`
