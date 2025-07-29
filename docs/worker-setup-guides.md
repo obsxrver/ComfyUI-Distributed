@@ -1,4 +1,4 @@
-## ComfyUI Distributed Worker Setup Guide
+## Worker Setup Guide
 
 **Master**: The main ComfyUI instance that coordinates and distributes work. This is where you load workflows, manage the queue, and view results.
 
