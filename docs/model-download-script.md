@@ -1,12 +1,9 @@
 ## Automating ComfyUI Model Downloads
 
-This guide will walk you through creating a shell script to automatically download the necessary models for your ComfyUI workflow, leveraging an advanced Large Language Model (LLM).
+> This guide will walk you through creating a shell script to automatically download the necessary models for your ComfyUI workflow, leveraging an advanced Large Language Model (LLM).
 
-1. Launch the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=ak218p52) with these Environment Variables:
-  - `CIVITAI_API_TOKEN` ([get your token here](https://civitai.com/user/account))
-  - `HF_API_TOKEN` ([get your token here](https://huggingface.co/settings/tokens))
-2. In ComfyUI, export your workflow as an API workflow
-3. Copy the below prompt and upload the API workflow to a LLM **that has access to the internet**
+1. In ComfyUI (on your local machine), export your workflow as an API workflow
+2. Copy the below prompt and upload the API workflow to an LLM **that has access to the internet**
 ```
 Create a sh script that will download the models from this workflow into the correct folders. For reference, these are the paths:
 
@@ -49,8 +46,12 @@ comfy model download --url https://huggingface.co/black-forest-labs/FLUX.1-dev/r
 comfy model download --url https://civitai.com/api/download/models/1759168 --relative-path /workspace/ComfyUI/models/checkpoints/SDXL --set-civitai-api-token $CIVITAI_API_TOKEN
 
 ```
-4. Review the LLMs output to make sure all download links are correct and save it as a .sh file, for example `download_models.sh`
-5. Upload it onto your Runpod instance, into `/workspace`
+3. Review the LLMs output to make sure all download links are correct and save it as a .sh file, for example `download_models.sh`
+4. Launch the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=ak218p52) with these Environment Variables:
+   - `CIVITAI_API_TOKEN`: [get your token here](https://civitai.com/user/account)
+   - `HF_API_TOKEN`: [get your token here](https://huggingface.co/settings/tokens)
+5. Upload the .sh file to your Runpod instance, into `/workspace`
 6. Then run these commands:
    - `chmod 755 /workspace/download_models.sh`
    - `/workspace/download_models.sh`
+7. Confirm each model name (sometimes you might need to rename them to match the name on your local machine)
