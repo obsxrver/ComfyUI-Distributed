@@ -34,6 +34,18 @@
 
 ---
 
+## Worker Types
+
+ComfyUI Distributed supports three types of workers:
+
+- **Local Workers** - Additional GPUs on the same machine (auto-configured on first launch)
+- **Remote Workers** - GPUs on other computers in your network
+- **Cloud Workers** - GPUs hosted on services like [Runpod](https://get.runpod.io/0bw29uf3ug0p), accessible via secure tunnels
+
+> For detailed setup instructions, see the [setup guide](/docs/worker-setup-guides.md)
+
+---
+
 ## Requirements
 
 - ComfyUI
