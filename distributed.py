@@ -14,6 +14,11 @@ import platform
 import time
 import atexit
 import signal
+import sys
+import shlex
+import uuid
+from multiprocessing import Queue
+from comfy.utils import ProgressBar
 
 # Import shared utilities
 from .utils.logging import debug_log, log
@@ -25,7 +30,7 @@ from .utils.async_helpers import run_async_in_server_loop
 from .utils.constants import (
     WORKER_JOB_TIMEOUT, PROCESS_TERMINATION_TIMEOUT, WORKER_CHECK_INTERVAL, 
     STATUS_CHECK_INTERVAL, CHUNK_SIZE, LOG_TAIL_BYTES, WORKER_LOG_PATTERN, 
-    WORKER_STARTUP_DELAY, PROCESS_WAIT_TIMEOUT, MEMORY_CLEAR_DELAY
+    WORKER_STARTUP_DELAY, PROCESS_WAIT_TIMEOUT, MEMORY_CLEAR_DELAY, MAX_BATCH
 )
 
 # Try to import psutil for better process management
@@ -94,6 +99,53 @@ async def clear_launching_state(request):
 async def get_network_info_endpoint(request):
     """Get network interfaces and recommend best IP for master."""
     import socket
+    
+    # Get CUDA device if available
+    cuda_device = None
+    cuda_device_count = 0
+    physical_device_count = 0
+    
+    if torch.cuda.is_available():
+        try:
+            import os
+            import subprocess
+            
+            # Get visible device count (what PyTorch sees)
+            cuda_device_count = torch.cuda.device_count()
+            
+            # Try to get actual physical device info
+            cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+            
+            # Method 1: Parse CUDA_VISIBLE_DEVICES
+            if cuda_visible and cuda_visible.strip():
+                visible_devices = [int(d.strip()) for d in cuda_visible.split(',') if d.strip().isdigit()]
+                if visible_devices:
+                    # Get the first visible device as the actual physical device
+                    cuda_device = visible_devices[0]
+                    
+                    # Try to get total physical device count using nvidia-smi
+                    try:
+                        result = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'], 
+                                              capture_output=True, text=True, timeout=5)
+                        if result.returncode == 0:
+                            physical_device_count = len(result.stdout.strip().split('\n'))
+                        else:
+                            physical_device_count = max(visible_devices) + 1  # Best guess
+                    except:
+                        physical_device_count = max(visible_devices) + 1  # Best guess
+                else:
+                    cuda_device = 0
+                    physical_device_count = cuda_device_count
+            else:
+                # No CUDA_VISIBLE_DEVICES set, current device is actual device
+                cuda_device = torch.cuda.current_device()
+                physical_device_count = cuda_device_count
+                
+        except Exception as e:
+            debug_log(f"CUDA detection error: {e}")
+            cuda_device = None
+            cuda_device_count = 0
+            physical_device_count = 0
     
     def get_network_ips():
         """Get all network IPs, trying multiple methods."""
@@ -195,6 +247,8 @@ async def get_network_info_endpoint(request):
             "hostname": hostname,
             "all_ips": all_ips,
             "recommended_ip": recommended_ip,
+            "cuda_device": cuda_device,
+            "cuda_device_count": physical_device_count if physical_device_count > 0 else cuda_device_count,
             "message": "Auto-detected network configuration"
         })
     except Exception as e:
@@ -205,6 +259,33 @@ async def get_network_info_endpoint(request):
             "all_ips": [],
             "recommended_ip": None
         })
+
+@server.PromptServer.instance.routes.get("/distributed/system_info")
+async def get_system_info_endpoint(request):
+    """Get system information including machine ID for local worker detection."""
+    try:
+        import socket
+        
+        return web.json_response({
+            "status": "success",
+            "hostname": socket.gethostname(),
+            "machine_id": get_machine_id(),
+            "platform": {
+                "system": platform.system(),
+                "machine": platform.machine(),
+                "node": platform.node(),
+                "path_separator": os.sep,  # Add path separator
+                "os_name": os.name  # Add OS name (posix, nt, etc.)
+            },
+            "is_docker": is_docker_environment(),
+            "is_runpod": is_runpod_environment(),
+            "runpod_pod_id": os.environ.get('RUNPOD_POD_ID')
+        })
+    except Exception as e:
+        return web.json_response({
+            "status": "error",
+            "message": str(e)
+        }, status=500)
 
 @server.PromptServer.instance.routes.post("/distributed/config/update_worker")
 async def update_worker_endpoint(request):
@@ -248,6 +329,11 @@ async def update_worker_endpoint(request):
                         worker.pop("extra_args", None)
                     else:
                         worker["extra_args"] = data["extra_args"]
+                        
+                # Handle type field
+                if "type" in data:
+                    worker["type"] = data["type"]
+                        
                 worker_found = True
                 break
                 
@@ -261,7 +347,8 @@ async def update_worker_endpoint(request):
                     "port": data["port"],
                     "cuda_device": data["cuda_device"],
                     "enabled": data.get("enabled", False),
-                    "extra_args": data.get("extra_args", "")
+                    "extra_args": data.get("extra_args", ""),
+                    "type": data.get("type", "local")
                 }
                 if "workers" not in config:
                     config["workers"] = []
@@ -347,6 +434,8 @@ async def update_master_endpoint(request):
             config['master'] = {}
         
         # Update all provided fields
+        if "name" in data:
+            config['master']['name'] = data['name']
         if "host" in data:
             config['master']['host'] = data['host']
         if "port" in data:
@@ -519,6 +608,79 @@ async def get_managed_workers_endpoint(request):
             "managed_workers": managed
         })
     except Exception as e:
+        return await handle_api_error(request, e, 500)
+
+
+@server.PromptServer.instance.routes.get("/distributed/local-worker-status")
+async def get_local_worker_status_endpoint(request):
+    """Check status of all local workers (localhost/no host specified)."""
+    try:
+        config = load_config()
+        worker_statuses = {}
+        
+        for worker in config.get("workers", []):
+            # Only check local workers
+            if not worker.get("host") or worker.get("host") in ["localhost", "127.0.0.1"]:
+                worker_id = worker["id"]
+                port = worker["port"]
+                
+                # Check if worker is enabled
+                if not worker.get("enabled", False):
+                    worker_statuses[worker_id] = {
+                        "online": False,
+                        "enabled": False,
+                        "processing": False,
+                        "queue_count": 0
+                    }
+                    continue
+                
+                # Try to connect to worker
+                try:
+                    session = await get_client_session()
+                    async with session.get(
+                        f"http://localhost:{port}/prompt",
+                        timeout=aiohttp.ClientTimeout(total=2)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            queue_remaining = data.get("exec_info", {}).get("queue_remaining", 0)
+                            worker_statuses[worker_id] = {
+                                "online": True,
+                                "enabled": True,
+                                "processing": queue_remaining > 0,
+                                "queue_count": queue_remaining
+                            }
+                        else:
+                            worker_statuses[worker_id] = {
+                                "online": False,
+                                "enabled": True,
+                                "processing": False,
+                                "queue_count": 0,
+                                "error": f"HTTP {resp.status}"
+                            }
+                except asyncio.TimeoutError:
+                    worker_statuses[worker_id] = {
+                        "online": False,
+                        "enabled": True,
+                        "processing": False,
+                        "queue_count": 0,
+                        "error": "Timeout"
+                    }
+                except Exception as e:
+                    worker_statuses[worker_id] = {
+                        "online": False,
+                        "enabled": True,
+                        "processing": False,
+                        "queue_count": 0,
+                        "error": str(e)
+                    }
+        
+        return web.json_response({
+            "status": "success",
+            "worker_statuses": worker_statuses
+        })
+    except Exception as e:
+        debug_log(f"Error checking local worker status: {e}")
         return await handle_api_error(request, e, 500)
 
 
@@ -723,9 +885,20 @@ class WorkerProcessManager:
             
             raise RuntimeError(error_msg)
         
-        # Add any extra arguments
+        # Add any extra arguments safely
         if worker_config.get('extra_args'):
-            cmd.extend(worker_config['extra_args'].split())
+            raw_args = worker_config['extra_args'].strip()
+            if raw_args:
+                # Safely split using shlex to handle quotes and spaces
+                extra_args_list = shlex.split(raw_args)
+                
+                # Validate: Block dangerous shell meta-characters (e.g., ; | & > < ` $)
+                forbidden_chars = set(';|>&<`$()[]{}*!?')
+                for arg in extra_args_list:
+                    if any(c in forbidden_chars for c in arg):
+                        raise ValueError(f"Invalid characters in extra_args: {arg}. Forbidden: {''.join(forbidden_chars)}")
+                
+                cmd.extend(extra_args_list)
             
         return cmd
         
@@ -1085,6 +1258,106 @@ class WorkerProcessManager:
 # Create global instance
 worker_manager = WorkerProcessManager()
 
+# Add IPC queue storage
+worker_manager.queues = {}
+
+# Helper to get aiohttp session
+async def get_client_session():
+    """Get or create aiohttp client session."""
+    if not hasattr(server.PromptServer.instance, '_distributed_session'):
+        server.PromptServer.instance._distributed_session = aiohttp.ClientSession()
+    return server.PromptServer.instance._distributed_session
+
+# Local worker detection functions
+async def is_local_worker(worker_config):
+    """Check if a worker is running on the same machine as the master."""
+    host = worker_config.get('host', 'localhost')
+    if host in ['localhost', '127.0.0.1', '0.0.0.0', ''] or worker_config.get('type') == 'local':
+        return True
+    
+    # For cloud workers, check if on same physical host
+    if worker_config.get('type') == 'cloud':
+        return await is_same_physical_host(worker_config)
+    
+    return False
+
+async def is_same_physical_host(worker_config):
+    """Compare machine IDs to determine if worker is on same physical host."""
+    try:
+        # Get master machine ID
+        master_machine_id = get_machine_id()
+        
+        # Fetch worker's machine ID via API
+        host = worker_config.get('host', 'localhost')
+        port = worker_config.get('port', 8188)
+        
+        session = await get_client_session()
+        async with session.get(
+            f"http://{host}:{port}/distributed/system_info",
+            timeout=aiohttp.ClientTimeout(total=5)
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                worker_machine_id = data.get('machine_id')
+                return worker_machine_id == master_machine_id
+            else:
+                debug_log(f"Failed to get system info from worker: HTTP {resp.status}")
+                return False
+    except Exception as e:
+        debug_log(f"Error checking same physical host: {e}")
+        return False
+
+def get_machine_id():
+    """Get a unique identifier for this machine."""
+    # Try multiple methods to get a stable machine ID
+    try:
+        # Method 1: MAC address-based UUID
+        return str(uuid.getnode())
+    except:
+        try:
+            # Method 2: Platform + hostname
+            import socket
+            return f"{platform.machine()}_{socket.gethostname()}"
+        except:
+            # Fallback
+            return platform.machine()
+
+def is_docker_environment():
+    """Check if running inside Docker container."""
+    return (os.path.exists('/.dockerenv') or 
+            os.environ.get('DOCKER_CONTAINER', False) or
+            'docker' in platform.node().lower())
+
+def is_runpod_environment():
+    """Check if running in Runpod environment."""
+    return (os.environ.get('RUNPOD_POD_ID') is not None or
+            os.environ.get('RUNPOD_API_KEY') is not None)
+
+async def get_comms_channel(worker_id, worker_config):
+    """Get communication channel for a worker (HTTP URL or IPC Queue)."""
+    if await is_local_worker(worker_config):
+        comm_mode = worker_config.get('communicationMode', 'http')
+        
+        if comm_mode == 'ipc':
+            # Use multiprocessing Queue for IPC
+            if worker_id not in worker_manager.queues:
+                worker_manager.queues[worker_id] = Queue()
+            return worker_manager.queues[worker_id]
+        elif is_docker_environment():
+            # Docker: use host.docker.internal
+            return f"http://host.docker.internal:{worker_config['port']}"
+        else:
+            # Local: use loopback
+            return f"http://127.0.0.1:{worker_config['port']}"
+    elif worker_config.get('type') == 'cloud' and is_runpod_environment():
+        # Runpod same-host optimization (if detected)
+        host = worker_config.get('host', 'localhost')
+        return f"http://{host}:{worker_config['port']}"
+    else:
+        # Remote worker: use configured endpoint
+        host = worker_config.get('host', 'localhost')
+        return f"http://{host}:{worker_config['port']}"
+
 # Auto-launch workers if enabled
 def auto_launch_workers():
     """Launch enabled workers if auto_launch_workers is set to true."""
@@ -1152,15 +1425,9 @@ def delayed_auto_launch():
     timer.daemon = True
     timer.start()
 
-# Call delayed auto-launch only if we're the master (not a worker)
-if not os.environ.get('COMFYUI_MASTER_PID'):
-    delayed_auto_launch()
-else:
-    debug_log("Running as worker, skipping auto-launch")
-
-# Register cleanup on exit - only clean up if setting is enabled
-def cleanup_on_exit(signum=None, frame=None):
-    """Handle cleanup on exit or signal"""
+# Async cleanup function for proper shutdown
+async def async_cleanup_and_exit(signum=None):
+    """Async-friendly cleanup and exit."""
     try:
         config = load_config()
         if config.get('settings', {}).get('stop_workers_on_master_exit', True):
@@ -1168,24 +1435,95 @@ def cleanup_on_exit(signum=None, frame=None):
             worker_manager.cleanup_all()
         else:
             print("\n[Distributed] Master shutting down, workers will continue running")
-            # Still save the current state
+            worker_manager.save_processes()
+    except Exception as e:
+        print(f"[Distributed] Error during cleanup: {e}")
+    
+    # On Windows, we need to exit differently
+    if platform.system() == "Windows":
+        # Force exit on Windows
+        sys.exit(0)
+    else:
+        # On Unix, stop the event loop gracefully
+        loop = asyncio.get_running_loop()
+        loop.stop()
+
+def register_async_signals():
+    """Register async signal handlers for graceful shutdown."""
+    if platform.system() == "Windows":
+        # Windows doesn't support add_signal_handler, use traditional signal handling
+        def signal_handler(signum, frame):
+            # Schedule the async cleanup in the event loop
+            loop = server.PromptServer.instance.loop
+            if loop and loop.is_running():
+                asyncio.run_coroutine_threadsafe(async_cleanup_and_exit(signum), loop)
+            else:
+                # Fallback to sync cleanup if loop isn't running
+                try:
+                    config = load_config()
+                    if config.get('settings', {}).get('stop_workers_on_master_exit', True):
+                        print("\n[Distributed] Master shutting down, stopping all managed workers...")
+                        worker_manager.cleanup_all()
+                    else:
+                        print("\n[Distributed] Master shutting down, workers will continue running")
+                        worker_manager.save_processes()
+                except Exception as e:
+                    print(f"[Distributed] Error during cleanup: {e}")
+                sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+    else:
+        # Unix-like systems support add_signal_handler
+        loop = server.PromptServer.instance.loop
+        
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(async_cleanup_and_exit(s)))
+        
+        # SIGHUP is Unix-only
+        loop.add_signal_handler(signal.SIGHUP, lambda: asyncio.create_task(async_cleanup_and_exit(signal.SIGHUP)))
+
+def sync_cleanup():
+    """Synchronous wrapper for atexit."""
+    try:
+        # For atexit, we don't want to stop the loop or exit
+        config = load_config()
+        if config.get('settings', {}).get('stop_workers_on_master_exit', True):
+            print("\n[Distributed] Master shutting down, stopping all managed workers...")
+            worker_manager.cleanup_all()
+        else:
+            print("\n[Distributed] Master shutting down, workers will continue running")
             worker_manager.save_processes()
     except Exception as e:
         print(f"[Distributed] Error during cleanup: {e}")
 
-# Register cleanup handlers
-atexit.register(cleanup_on_exit)
+# Register atexit handler for normal exits
+atexit.register(sync_cleanup)
 
-# Handle terminal window closing and Ctrl+C
-try:
-    signal.signal(signal.SIGINT, cleanup_on_exit)
-    signal.signal(signal.SIGTERM, cleanup_on_exit)
-    
-    if platform.system() != "Windows":
-        # SIGHUP is sent when terminal closes on Unix
-        signal.signal(signal.SIGHUP, cleanup_on_exit)
-except Exception as e:
-    print(f"[Distributed] Warning: Could not set signal handlers: {e}")
+# Call delayed auto-launch only if we're the master (not a worker)
+if not os.environ.get('COMFYUI_MASTER_PID'):
+    delayed_auto_launch()
+    try:
+        register_async_signals()  # Register async signal handlers
+    except Exception as e:
+        print(f"[Distributed] Warning: Could not register async signal handlers: {e}")
+        # Fall back to basic signal handling
+        def basic_signal_handler(signum, frame):
+            print("\n[Distributed] Received signal, shutting down...")
+            try:
+                config = load_config()
+                if config.get('settings', {}).get('stop_workers_on_master_exit', True):
+                    worker_manager.cleanup_all()
+                else:
+                    worker_manager.save_processes()
+            except Exception as cleanup_error:
+                print(f"[Distributed] Error during cleanup: {cleanup_error}")
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, basic_signal_handler)
+        signal.signal(signal.SIGTERM, basic_signal_handler)
+else:
+    debug_log("Running as worker, skipping auto-launch")
 
 # --- Persistent State Storage ---
 # Store job queue on the persistent server instance to survive script reloads
@@ -1199,7 +1537,7 @@ if not hasattr(prompt_server, 'distributed_pending_jobs'):
 
 @server.PromptServer.instance.routes.post("/distributed/load_image")
 async def load_image_endpoint(request):
-    """Load an image file and return it as base64 data."""
+    """Load an image or video file and return it as base64 data with hash."""
     try:
         data = await request.json()
         image_path = data.get("image_path")
@@ -1209,71 +1547,244 @@ async def load_image_endpoint(request):
         
         import folder_paths
         import base64
-        from PIL import Image
         import io
+        import hashlib
         
-        # Use ComfyUI's folder paths to find the image
+        # Use ComfyUI's folder paths to find the file
         full_path = folder_paths.get_annotated_filepath(image_path)
         
         if not os.path.exists(full_path):
-            return await handle_api_error(request, f"Image not found: {image_path}", 404)
+            return await handle_api_error(request, f"File not found: {image_path}", 404)
         
-        # Load and convert to base64
-        with Image.open(full_path) as img:
-            # Convert to RGB if needed
-            if img.mode not in ('RGB', 'RGBA'):
-                img = img.convert('RGB')
+        # Calculate file hash
+        hash_md5 = hashlib.md5()
+        with open(full_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        file_hash = hash_md5.hexdigest()
+        
+        # Check if it's a video file
+        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
+        file_ext = os.path.splitext(full_path)[1].lower()
+        
+        if file_ext in video_extensions:
+            # For video files, read the raw bytes
+            with open(full_path, 'rb') as f:
+                file_data = f.read()
             
-            # Save to bytes
-            buffer = io.BytesIO()
-            img.save(buffer, format='PNG', compress_level=1)  # Fast compression
-            img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            # Determine MIME type
+            mime_types = {
+                '.mp4': 'video/mp4',
+                '.avi': 'video/x-msvideo', 
+                '.mov': 'video/quicktime',
+                '.mkv': 'video/x-matroska',
+                '.webm': 'video/webm'
+            }
+            mime_type = mime_types.get(file_ext, 'video/mp4')
+            
+            # Return base64 encoded video with data URL
+            video_base64 = base64.b64encode(file_data).decode('utf-8')
+            return web.json_response({
+                "status": "success",
+                "image_data": f"data:{mime_type};base64,{video_base64}",
+                "hash": file_hash
+            })
+        else:
+            # For images, use PIL
+            from PIL import Image
+            
+            # Load and convert to base64
+            with Image.open(full_path) as img:
+                # Convert to RGB if needed
+                if img.mode not in ('RGB', 'RGBA'):
+                    img = img.convert('RGB')
+                
+                # Save to bytes
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG', compress_level=1)  # Fast compression
+                img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            
+            return web.json_response({
+                "status": "success",
+                "image_data": f"data:image/png;base64,{img_base64}",
+                "hash": file_hash
+            })
+        
+    except Exception as e:
+        return await handle_api_error(request, e, 500)
+
+@server.PromptServer.instance.routes.post("/distributed/check_file")
+async def check_file_endpoint(request):
+    """Check if a file exists and matches the given hash."""
+    try:
+        data = await request.json()
+        filename = data.get("filename")
+        expected_hash = data.get("hash")
+        
+        if not filename or not expected_hash:
+            return await handle_api_error(request, "Missing filename or hash", 400)
+        
+        import folder_paths
+        import hashlib
+        
+        # Use ComfyUI's folder paths to find the file
+        full_path = folder_paths.get_annotated_filepath(filename)
+        
+        if not os.path.exists(full_path):
+            return web.json_response({
+                "status": "success",
+                "exists": False
+            })
+        
+        # Calculate file hash
+        hash_md5 = hashlib.md5()
+        with open(full_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        file_hash = hash_md5.hexdigest()
+        
+        # Check if hash matches
+        hash_matches = file_hash == expected_hash
         
         return web.json_response({
             "status": "success",
-            "image_data": f"data:image/png;base64,{img_base64}"
+            "exists": True,
+            "hash_matches": hash_matches
         })
         
     except Exception as e:
         return await handle_api_error(request, e, 500)
+
 
 @server.PromptServer.instance.routes.post("/distributed/job_complete")
 async def job_complete_endpoint(request):
     try:
         data = await request.post()
         multi_job_id = data.get('multi_job_id')
-        image_file = data.get('image')
         worker_id = data.get('worker_id')
-        image_index = data.get('image_index')
         is_last = data.get('is_last', 'False').lower() == 'true'
+        
+        if multi_job_id is None or worker_id is None:
+            return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
 
-        debug_log(f"job_complete received - job_id: {multi_job_id}, worker: {worker_id}, index: {image_index}, is_last: {is_last}")
+        # Check for batch mode
+        batch_size = int(data.get('batch_size', 0))
+        tensors = []
+        
+        if batch_size > 0:
+            # Batch mode: Extract multiple images
+            debug_log(f"job_complete received batch - job_id: {multi_job_id}, worker: {worker_id}, batch_size: {batch_size}")
+            
+            # Check for JSON metadata
+            metadata_field = data.get('images_metadata')
+            metadata = None
+            if metadata_field:
+                # New JSON metadata format
+                try:
+                    # Handle different types of metadata field
+                    if hasattr(metadata_field, 'file'):
+                        # File-like object
+                        metadata_str = metadata_field.file.read().decode('utf-8')
+                    elif isinstance(metadata_field, (bytes, bytearray)):
+                        # Direct bytes/bytearray
+                        metadata_str = metadata_field.decode('utf-8')
+                    else:
+                        # String
+                        metadata_str = str(metadata_field)
+                    
+                    metadata = json.loads(metadata_str)
+                    if len(metadata) != batch_size:
+                        return await handle_api_error(request, "Metadata length mismatch", 400)
+                    debug_log(f"Using JSON metadata for batch from worker {worker_id}")
+                except Exception as e:
+                    log(f"Error parsing JSON metadata from worker {worker_id}: {e}")
+                    return await handle_api_error(request, f"Metadata parsing error: {e}", 400)
+            else:
+                # Legacy format - log deprecation warning
+                debug_log(f"WARNING: Worker {worker_id} using legacy field format. Please update to use JSON metadata.")
+            
+            # Process images with per-item error handling
+            image_data_list = []  # List of tuples: (index, tensor)
+            
+            for i in range(batch_size):
+                image_field = data.get(f'image_{i}')
+                if image_field is None:
+                    log(f"Missing image_{i} from worker {worker_id}, skipping")
+                    continue
+                    
+                try:
+                    img_data = image_field.file.read()
+                    img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                    tensor = pil_to_tensor(img)
+                    tensor = ensure_contiguous(tensor)
+                    
+                    # Get expected index from metadata or use position
+                    if metadata and i < len(metadata):
+                        expected_idx = metadata[i].get('index', i)
+                        if i != expected_idx:
+                            debug_log(f"Warning: Image order mismatch at position {i}, expected index {expected_idx}")
+                    else:
+                        expected_idx = i
+                    
+                    image_data_list.append((expected_idx, tensor))
+                except Exception as e:
+                    log(f"Error processing image {i} from worker {worker_id}: {e}, skipping this image")
+                    # Continue processing other images instead of failing entire batch
+                    continue
+            
+            # Check if we got any valid images
+            if not image_data_list:
+                return await handle_api_error(request, "No valid images in batch", 400)
+            
+            # Sort by index to ensure correct order
+            image_data_list.sort(key=lambda x: x[0])
+            tensors = [tensor for _, tensor in image_data_list]
+            
+            # Validate final order
+            if metadata:
+                debug_log(f"Reordered {len(tensors)} images based on metadata indices")
+        else:
+            # Fallback for single-image mode (backward compatibility)
+            image_file = data.get('image')
+            image_index = data.get('image_index')
+            
+            debug_log(f"job_complete received single - job_id: {multi_job_id}, worker: {worker_id}, index: {image_index}, is_last: {is_last}")
+            
+            if not image_file:
+                return await handle_api_error(request, "Missing image data", 400)
+                
+            try:
+                img_data = image_file.file.read()
+                img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                tensor = pil_to_tensor(img)
+                tensor = ensure_contiguous(tensor)
+                tensors = [tensor]
+            except Exception as e:
+                log(f"Error processing image from worker {worker_id}: {e}")
+                return await handle_api_error(request, f"Image processing error: {e}", 400)
 
-        if not all([multi_job_id, image_file]):
-            return await handle_api_error(request, "Missing job_id or image data", 400)
-
-        # Process image with error handling
-        try:
-            img_data = image_file.file.read()
-            img = Image.open(io.BytesIO(img_data)).convert("RGB")
-            # Convert to tensor using utility function
-            tensor = pil_to_tensor(img)
-            # Ensure tensor is contiguous
-            tensor = ensure_contiguous(tensor)
-        except Exception as e:
-            log(f"Error processing image from worker {worker_id}: {e}")
-            return await handle_api_error(request, f"Image processing error: {e}", 400)
-
+        # Put batch into queue
         async with prompt_server.distributed_jobs_lock:
             debug_log(f"Current pending jobs: {list(prompt_server.distributed_pending_jobs.keys())}")
             if multi_job_id in prompt_server.distributed_pending_jobs:
-                await prompt_server.distributed_pending_jobs[multi_job_id].put({
-                    'tensor': tensor,
-                    'worker_id': worker_id,
-                    'image_index': int(image_index) if image_index else 0,
-                    'is_last': is_last
-                })
-                debug_log(f"Received result for job {multi_job_id} from worker {worker_id} (last: {is_last})")
+                if batch_size > 0:
+                    # Put batch as single item
+                    await prompt_server.distributed_pending_jobs[multi_job_id].put({
+                        'worker_id': worker_id,
+                        'tensors': tensors,
+                        'is_last': is_last
+                    })
+                    debug_log(f"Received batch result for job {multi_job_id} from worker {worker_id}, size={len(tensors)}")
+                else:
+                    # Put single image (backward compat)
+                    await prompt_server.distributed_pending_jobs[multi_job_id].put({
+                        'tensor': tensors[0],
+                        'worker_id': worker_id,
+                        'image_index': int(image_index) if image_index else 0,
+                        'is_last': is_last
+                    })
+                    debug_log(f"Received single result for job {multi_job_id} from worker {worker_id}")
+                    
                 debug_log(f"Queue size after put: {prompt_server.distributed_pending_jobs[multi_job_id].qsize()}")
                 return web.json_response({"status": "success"})
             else:
@@ -1316,43 +1827,55 @@ class DistributedCollectorNode:
         )
         return result
 
-    async def send_image_to_master(self, image_tensor, multi_job_id, master_url, image_index, worker_id, is_last=False):
-        """Helper method to send a single image to the master"""
-        # Ensure we handle the tensor shape correctly (H, W, C)
-        if image_tensor.dim() == 4:  # Has batch dimension
-            img = tensor_to_pil(image_tensor, 0)
-        else:  # Single image without batch dimension
-            # Add batch dimension temporarily for tensor_to_pil
-            img = tensor_to_pil(image_tensor.unsqueeze(0), 0)
-        byte_io = io.BytesIO()
-        # Use PNG with no compression for lossless transfer
-        img.save(byte_io, format='PNG', compress_level=0)
-        byte_io.seek(0)
+    async def send_batch_to_master(self, image_batch, multi_job_id, master_url, worker_id):
+        """Send image batch to master, chunked if large."""
+        batch_size = image_batch.shape[0]
+        if batch_size == 0:
+            return
         
-        data = aiohttp.FormData()
-        data.add_field('multi_job_id', multi_job_id)
-        data.add_field('worker_id', str(worker_id))
-        data.add_field('image_index', str(image_index))
-        data.add_field('is_last', str(is_last))
-        data.add_field('image', byte_io, filename=f'image_{image_index}.png', content_type='image/png')
+        
+        for start in range(0, batch_size, MAX_BATCH):
+            chunk = image_batch[start:start + MAX_BATCH]
+            chunk_size = chunk.shape[0]
+            is_chunk_last = (start + chunk_size == batch_size)  # True only for final chunk
+            
+            
+            data = aiohttp.FormData()
+            data.add_field('multi_job_id', multi_job_id)
+            data.add_field('worker_id', str(worker_id))
+            data.add_field('is_last', str(is_chunk_last))
+            data.add_field('batch_size', str(chunk_size))
+            
+            # Chunk metadata: Absolute index from full batch
+            metadata = [{'index': start + j} for j in range(chunk_size)]
+            data.add_field('images_metadata', json.dumps(metadata), content_type='application/json')
+            
+            # Add chunk images
+            for j in range(chunk_size):
+                # Convert tensor slice to PIL
+                img = tensor_to_pil(chunk[j:j+1], 0)
+                byte_io = io.BytesIO()
+                img.save(byte_io, format='PNG', compress_level=0)
+                byte_io.seek(0)
+                data.add_field(f'image_{j}', byte_io, filename=f'image_{j}.png', content_type='image/png')
+            
+            try:
+                
+                session = await get_client_session()
+                url = f"{master_url}/distributed/job_complete"
+                async with session.post(url, data=data) as response:
+                    response.raise_for_status()
+            except Exception as e:
+                log(f"Worker - Failed to send chunk to master: {e}")
+                debug_log(f"Worker - Full error details: URL={url}")
+                raise  # Re-raise to handle at caller level
 
-        try:
-            session = await get_client_session()
-            async with session.post(f"{master_url}/distributed/job_complete", data=data) as response:
-                response.raise_for_status()
-        except Exception as e:
-            log(f"Worker - Failed to send image {image_index+1} to master: {e}")
 
     async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id=""):
         if is_worker:
-            # Worker mode: send images to master
+            # Worker mode: send images to master in a single batch
             debug_log(f"Worker - Job {multi_job_id} complete. Sending {images.shape[0]} image(s) to master")
-            
-            # Send all images, marking the last one
-            for i in range(images.shape[0]):
-                is_last = (i == images.shape[0] - 1)
-                await self.send_image_to_master(images[i], multi_job_id, master_url, i, worker_id, is_last)
-            
+            await self.send_batch_to_master(images, multi_job_id, master_url, worker_id)
             return (images,)
         else:
             # Master mode: collect images from workers
@@ -1368,8 +1891,6 @@ class DistributedCollectorNode:
             # Ensure master images are contiguous
             images_on_cpu = ensure_contiguous(images_on_cpu)
             
-            # Debug: Check master tensor properties
-            debug_log(f"Master tensor - shape: {images_on_cpu.shape}, dtype: {images_on_cpu.dtype}, device: {images_on_cpu.device}")
             
             # Initialize storage for collected images
             worker_images = {}  # Dict to store images by worker_id and index
@@ -1390,14 +1911,15 @@ class DistributedCollectorNode:
             # Use a reasonable timeout for the first image
             timeout = WORKER_JOB_TIMEOUT
             
-            debug_log(f"Master - Starting collection loop, expecting {num_workers} workers")
             
             # Get queue size before starting
             async with prompt_server.distributed_jobs_lock:
                 q = prompt_server.distributed_pending_jobs[multi_job_id]
                 initial_size = q.qsize()
-            debug_log(f"Master - Queue size before collection: {initial_size}")
-            
+
+            # NEW: Initialize progress bar for workers (total = num_workers)
+            p = ProgressBar(num_workers)
+
             while len(workers_done) < num_workers:
                 try:
                     # Get the queue again each time to ensure we have the right reference
@@ -1405,34 +1927,48 @@ class DistributedCollectorNode:
                         q = prompt_server.distributed_pending_jobs[multi_job_id]
                         current_size = q.qsize()
                     
-                    debug_log(f"Master - Waiting for queue item, timeout={timeout}s, queue size={current_size}")
                     
                     result = await asyncio.wait_for(q.get(), timeout=timeout)
                     worker_id = result['worker_id']
-                    image_index = result['image_index']
-                    tensor = result['tensor']
                     is_last = result.get('is_last', False)
                     
-                    debug_log(f"Master - Got result from worker {worker_id}, image {image_index}, is_last={is_last}")
-                    
-                    if worker_id not in worker_images:
-                        worker_images[worker_id] = {}
-                    worker_images[worker_id][image_index] = tensor
-                    
-                    # Debug: Check worker tensor properties
-                    if collected_count == 0:  # Only print once
-                        debug_log(f"Master - Worker tensor - shape: {tensor.shape}, dtype: {tensor.dtype}, device: {tensor.device}")
-                    
-                    collected_count += 1
+                    # Check if batch mode
+                    tensors = result.get('tensors', [])
+                    if tensors:
+                        # Batch mode
+                        debug_log(f"Master - Got batch from worker {worker_id}, size={len(tensors)}, is_last={is_last}")
+                        
+                        if worker_id not in worker_images:
+                            worker_images[worker_id] = {}
+                        
+                        # Add all tensors with sequential indices
+                        for idx, tensor in enumerate(tensors):
+                            worker_images[worker_id][idx] = tensor
+                            
+                        
+                        collected_count += len(tensors)
+                    else:
+                        # Single image mode (backward compat)
+                        image_index = result['image_index']
+                        tensor = result['tensor']
+                        
+                        debug_log(f"Master - Got single result from worker {worker_id}, image {image_index}, is_last={is_last}")
+                        
+                        if worker_id not in worker_images:
+                            worker_images[worker_id] = {}
+                        worker_images[worker_id][image_index] = tensor
+                        
+                        
+                        collected_count += 1
                     
                     # Once we start receiving images, use shorter timeout
                     timeout = WORKER_JOB_TIMEOUT
                     
                     if is_last:
                         workers_done.add(worker_id)
-                        debug_log(f"Master - Worker {worker_id} done. Collected {len(worker_images[worker_id])} images")
+                        p.update(1)  # +1 per completed worker
                     else:
-                        debug_log(f"Master - Collected image {image_index + 1} from worker {worker_id}")
+                        pass  # Continue waiting for more results
                     
                 except asyncio.TimeoutError:
                     missing_workers = set(str(w) for w in enabled_workers) - workers_done
@@ -1443,7 +1979,6 @@ class DistributedCollectorNode:
                         if multi_job_id in prompt_server.distributed_pending_jobs:
                             final_q = prompt_server.distributed_pending_jobs[multi_job_id]
                             final_size = final_q.qsize()
-                            debug_log(f"Master - Queue size at timeout: {final_size}")
                             
                             # Try to drain any remaining items
                             remaining_items = []
@@ -1455,31 +1990,41 @@ class DistributedCollectorNode:
                                     break
                             
                             if remaining_items:
-                                debug_log(f"Master - Found {len(remaining_items)} items in queue after timeout!")
                                 # Process them
                                 for item in remaining_items:
                                     worker_id = item['worker_id']
-                                    image_index = item['image_index']
-                                    tensor = item['tensor']
                                     is_last = item.get('is_last', False)
                                     
-                                    if worker_id not in worker_images:
-                                        worker_images[worker_id] = {}
-                                    worker_images[worker_id][image_index] = tensor
-                                    
-                                    collected_count += 1
+                                    # Check if batch mode
+                                    tensors = item.get('tensors', [])
+                                    if tensors:
+                                        # Batch mode
+                                        if worker_id not in worker_images:
+                                            worker_images[worker_id] = {}
+                                        
+                                        for idx, tensor in enumerate(tensors):
+                                            worker_images[worker_id][idx] = tensor
+                                        
+                                        collected_count += len(tensors)
+                                    else:
+                                        # Single image mode
+                                        image_index = item['image_index']
+                                        tensor = item['tensor']
+                                        
+                                        if worker_id not in worker_images:
+                                            worker_images[worker_id] = {}
+                                        worker_images[worker_id][image_index] = tensor
+                                        
+                                        collected_count += 1
                                     
                                     if is_last:
                                         workers_done.add(worker_id)
-                                        debug_log(f"Master - Worker {worker_id} done (found in timeout drain)")
+                                        p.update(1)  # +1 here too
                         else:
                             log(f"Master - Queue {multi_job_id} no longer exists!")
                     break
             
             total_collected = sum(len(imgs) for imgs in worker_images.values())
-            debug_log(f"Master - Collection complete. Received {total_collected} images from {len(workers_done)} workers")
-            debug_log(f"Master - Workers done: {workers_done}, Enabled workers: {enabled_workers}")
-            debug_log(f"Master - Worker images keys: {list(worker_images.keys())}")
             
             # Clean up job queue
             async with prompt_server.distributed_jobs_lock:
@@ -1519,7 +2064,6 @@ class DistributedCollectorNode:
                 return (combined,)
             except Exception as e:
                 log(f"Master - Error combining images: {e}")
-                debug_log(f"Master - Tensor shapes: {[t.shape for t in cpu_tensors]}")
                 # Return just the master images as fallback
                 return (images,)
 
@@ -1578,11 +2122,87 @@ class DistributedSeed:
                 # Fallback: return original seed
                 return (seed,)
 
+# Define ByPassTypeTuple for flexible return types
+class AnyType(str):
+    def __ne__(self, __value: object) -> bool:
+        return False
+
+any_type = AnyType("*")
+
+class ByPassTypeTuple(tuple):
+    def __getitem__(self, index):
+        if index > 0:
+            index = 0
+        item = super().__getitem__(index)
+        if isinstance(item, str):
+            return any_type
+        return item
+
+class ImageBatchDivider:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "divide_by": ("INT", {
+                    "default": 2, 
+                    "min": 1, 
+                    "max": 10, 
+                    "step": 1,
+                    "display": "number",
+                    "tooltip": "Number of parts to divide the batch into"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ByPassTypeTuple(("IMAGE", ))  # Flexible for variable outputs
+    RETURN_NAMES = ByPassTypeTuple(tuple([f"batch_{i+1}" for i in range(10)]))
+    FUNCTION = "divide_batch"
+    OUTPUT_NODE = True
+    CATEGORY = "image"
+    
+    def divide_batch(self, images, divide_by):
+        import torch
+        
+        # Use divide_by directly
+        total_splits = divide_by
+        
+        if total_splits > 10:
+            total_splits = 10  # Cap to max
+        
+        # Get total number of frames
+        total_frames = images.shape[0]
+        frames_per_split = total_frames // total_splits
+        remainder = total_frames % total_splits
+        
+        outputs = []
+        start_idx = 0
+        
+        for i in range(total_splits):
+            current_frames = frames_per_split + (1 if i < remainder else 0)
+            end_idx = start_idx + current_frames
+            split_frames = images[start_idx:end_idx]
+            outputs.append(split_frames)
+            start_idx = end_idx
+        
+        # Pad with empty tensors up to max (10) to match potential RETURN_TYPES len
+        empty_shape = (1, images.shape[1], images.shape[2], images.shape[3]) if total_frames > 0 else (1, 512, 512, 3)
+        empty_tensor = torch.zeros(empty_shape, dtype=images.dtype if total_frames > 0 else torch.float32, 
+                                   device=images.device if total_frames > 0 else 'cpu')
+        
+        while len(outputs) < 10:
+            outputs.append(empty_tensor)
+        
+        return tuple(outputs)
+
+
 NODE_CLASS_MAPPINGS = { 
     "DistributedCollector": DistributedCollectorNode,
-    "DistributedSeed": DistributedSeed
+    "DistributedSeed": DistributedSeed,
+    "ImageBatchDivider": ImageBatchDivider
 }
 NODE_DISPLAY_NAME_MAPPINGS = { 
     "DistributedCollector": "Distributed Collector",
-    "DistributedSeed": "Distributed Seed"
+    "DistributedSeed": "Distributed Seed",
+    "ImageBatchDivider": "Image Batch Divider"
 }

@@ -1,10 +1,11 @@
 """
 Shared constants for ComfyUI-Distributed.
 """
+import os
 
 # Timeouts (in seconds)
-WORKER_JOB_TIMEOUT = 10.0
-TILE_COLLECTION_TIMEOUT = 60.0
+WORKER_JOB_TIMEOUT = 30.0
+TILE_COLLECTION_TIMEOUT = 30.0
 TILE_WAIT_TIMEOUT = 30.0
 PROCESS_TERMINATION_TIMEOUT = 5.0
 
@@ -32,3 +33,9 @@ TILE_SEND_TIMEOUT = 60.0
 
 # Memory operations  
 MEMORY_CLEAR_DELAY = 0.5
+
+# Batch processing
+MAX_BATCH = int(os.environ.get('COMFYUI_MAX_BATCH', '20'))  # Maximum items per batch to prevent timeouts/OOM (~100MB chunks for 512x512 PNGs)
+
+# Heartbeat monitoring
+HEARTBEAT_TIMEOUT = int(os.environ.get('COMFYUI_HEARTBEAT_TIMEOUT', '60'))  # Worker heartbeat timeout in seconds
