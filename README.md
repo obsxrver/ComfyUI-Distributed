@@ -18,7 +18,7 @@
 ## Key Features
 
 #### Parallel Workflow Processing
-- Run workflows on multiple GPUs simultaneously with varied seeds
+- Run your workflow on multiple GPUs simultaneously with varied seeds, collect results on the master
 - Scale output with more workers
 - Supports images and videos
 
