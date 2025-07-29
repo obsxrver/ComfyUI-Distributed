@@ -60,7 +60,7 @@ ComfyUI Distributed allows you to distribute your workflows across multiple GPUs
 2. On Runpod, go to Storage > New Network Volume and create a volume that will store the models you need. Start with 40 GB, you can always add more later.
 3. Use the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=ak218p52) template.
 4. Make sure your Network Volume is mounted and choose a suitable GPU.
-> ⚠️ To use the ComfyUI Distributed Pod template, you will need to filter instances by CUDA 12.8
+> ⚠️ To use the ComfyUI Distributed Pod template, you will need to filter instances by CUDA 12.8 (add filter in Additional Filters).
 6. Press Edit Template to configure the pod's Environment Variables:
 	- CIVITAI_API_TOKEN: [get your token here](https://civitai.com/user/account)
 	- HF_API_TOKEN: [get your token here](https://huggingface.co/settings/tokens)
