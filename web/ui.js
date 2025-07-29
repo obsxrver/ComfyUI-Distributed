@@ -697,7 +697,7 @@ export class DistributedUI {
         // Create powered by Runpod text (initially hidden)
         const runpodText = document.createElement("a");
         runpodText.id = `runpod-text-${worker.id}`;
-        runpodText.href = "https://get.runpod.io/0bw29uf3ug0p";
+        runpodText.href = "https://github.com/robertvoy/ComfyUI-Distributed/blob/main/docs/worker-setup-guides.md#cloud-workers";
         runpodText.target = "_blank";
         runpodText.textContent = "Deploy Cloud Worker with Runpod";
         runpodText.style.cssText = "font-size: 12px; color: #4a90e2; text-decoration: none; margin-top: 4px; display: none; cursor: pointer;";
