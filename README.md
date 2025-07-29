@@ -51,6 +51,7 @@ ComfyUI Distributed supports three types of workers:
 - ComfyUI
 > Note: Desktop app not currently supported
 - Multiple GPUs
+> No additional GPUs? Use [Cloud Workers](https://github.com/robertvoy/ComfyUI-Distributed/blob/main/docs/worker-setup-guides.md#cloud-workers)
 - That's it
 
 ---
@@ -111,6 +112,7 @@ Accelerate Ultimate SD Upscaler by distributing tiles across multiple workers, w
 2. Upscale with ESRGAN or similar
 3. Connect to **Ultimate SD Upscale Distributed**
 4. Configure tile settings
+> If your GPUs are similar, set `static_distribution` to true; otherwise, false
 5. Enable workers for faster processing
 
 ---
