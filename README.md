@@ -9,7 +9,7 @@
 <br><br>
 </div>
 
-> **A powerful extension for ComfyUI that enables distributed and parallel processing across multiple GPUs and machines. Generate more images and videos and accelerate your upscaling workflows by leveraging all available GPU resources in your network.**
+> **A powerful extension for ComfyUI that enables distributed and parallel processing across multiple GPUs and machines. Generate more images and videos and accelerate your upscaling workflows by leveraging all available GPU resources in your network and cloud.**
 
 ![Clipboard Image (7)](https://github.com/user-attachments/assets/66aaadef-f195-48a1-a368-17dd0dae477d)
 
