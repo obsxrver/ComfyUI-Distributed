@@ -1,7 +1,5 @@
 ## ComfyUI Distributed Worker Setup Guide
 
-ComfyUI Distributed allows you to distribute your workflows across multiple GPUs, whether they're in the same machine, on your local network, or in the cloud.
-
 **Master**: The main ComfyUI instance that coordinates and distributes work. This is where you load workflows, manage the queue, and view results.
 
 **Worker**: A ComfyUI instance that receives and processes tasks from the master. Workers handle just the GPU computation and send results back to the master. You can have multiple workers connected to a single master, each utilizing their own GPU.
