@@ -1,5 +1,5 @@
 <div align="center">
-<img width="320" src="https://github.com/user-attachments/assets/537d38cc-2e34-4527-bca7-0d79f4120cce" />
+<img width="320" src="https://github.com/user-attachments/assets/64a6dfda-b9c9-45ad-aa60-781ff679da7a" />
 <br><br>
 <a href="https://www.youtube.com/watch?v=p6eE3IlAbOs"><img src="https://img.shields.io/badge/Video_Tutorial-grey?style=flat&logo=youtube&logoColor=white" alt="Video Tutorial"></a>
 <a href="/docs/worker-setup-guides.md"><img src="https://img.shields.io/badge/Setup_Guides-grey?style=flat&logo=gitbook&logoColor=white" alt="Setup Guides"></a>
