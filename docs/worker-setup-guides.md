@@ -95,7 +95,7 @@
    - If your cloud platform doesn't provide a secure connection, use Cloudflare to create a tunnel for the worker. Each GPU needs their own tunnel for their respective port.
 	- For example: `./cloudflared tunnel --url http://localhost:8188`
 1. **Launch** ComfyUI with the `--listen --enable-cors-header` arguments. ⚠️ **Required!**
-2. **Add** workers in the UI panel if the remote machine has more than one GPU.
+2. **Add** workers in the UI panel if the cloud machine has more than one GPU.
    - Make sure that they also have `--listen` set in `Extra Args`.
    - Then launch them.
   
