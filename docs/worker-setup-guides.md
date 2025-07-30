@@ -88,7 +88,7 @@ comfy model download --url https://huggingface.co/black-forest-labs/FLUX.1-dev/r
 6. **Click** "Add Worker."
 7. **Choose** "Cloud".
 8. **Configure** your cloud worker:
-	- **Host**: The Runpod address
+	- **Host**: The ComfyUI Runpod address. For example: `wcegfo9tbbml9l-8188.proxy.runpod.net`
 	- **Port**: 443
 9. **Save** the remote worker configuration.
 
