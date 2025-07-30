@@ -50,7 +50,7 @@ ComfyUI Distributed supports three types of workers:
 
 - ComfyUI
 > Note: Desktop app not currently supported
-- Multiple GPUs
+- Multiple NVIDIA GPUs
 > No additional GPUs? Use [Cloud Workers](https://github.com/robertvoy/ComfyUI-Distributed/blob/main/docs/worker-setup-guides.md#cloud-workers)
 - That's it
 
