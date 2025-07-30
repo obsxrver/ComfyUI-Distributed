@@ -65,7 +65,13 @@
 	- SAGE_ATTENTION: optional optimisation (set to true/false)
 5. Deploy your pod.
 6. Connect to your pod using JupyterLabs. This gives us access to the pod's file system.
-7. Download models into /workspaces/ComfyUI/models/ (these will remain on your network drive even after you terminate the pod).
+7. Download models into /workspaces/ComfyUI/models/ (these will remain on your network drive even after you terminate the pod). Example commands below:
+```
+# Download from CivitAI
+comfy model download --url https://civitai.com/api/download/models/1759168 --relative-path /workspace/ComfyUI/models/checkpoints --set-civitai-api-token $CIVITAI_API_TOKEN
+# Download model from Hugging Face
+comfy model download --url https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors --relative-path /workspace/ComfyUI/models/unet --set-hf-api-token $HF_API_TOKEN
+```
 > ℹ️ Use [this guide](model-download-script.md) to make this process easy. It will generate a shell script that automatically downloads the models for a given workflow.
 9. Access ComfyUI through the Runpod URL.
 10. Download any additional custom nodes you need using the ComfyUI Manager.
