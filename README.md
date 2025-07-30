@@ -9,7 +9,7 @@
 <br><br>
 </div>
 
-> **A powerful extension for ComfyUI that enables distributed and parallel processing across multiple GPUs and machines. Generate more images and videos and accelerate your upscaling workflows by leveraging all available GPU resources in your network.**
+> **A powerful extension for ComfyUI that enables distributed and parallel processing across multiple GPUs and machines. Generate more images and videos and accelerate your upscaling workflows by leveraging all available GPU resources in your network and cloud.**
 
 ![Clipboard Image (7)](https://github.com/user-attachments/assets/66aaadef-f195-48a1-a368-17dd0dae477d)
 
@@ -18,7 +18,7 @@
 ## Key Features
 
 #### Parallel Workflow Processing
-- Run workflows on multiple GPUs simultaneously with varied seeds
+- Run your workflow on multiple GPUs simultaneously with varied seeds, collect results on the master
 - Scale output with more workers
 - Supports images and videos
 
@@ -34,11 +34,24 @@
 
 ---
 
+## Worker Types
+
+ComfyUI Distributed supports three types of workers:
+
+- **Local Workers** - Additional GPUs on the same machine (auto-configured on first launch)
+- **Remote Workers** - GPUs on other computers in your network
+- **Cloud Workers** - GPUs hosted on services like [Runpod](https://get.runpod.io/0bw29uf3ug0p), accessible via secure tunnels
+
+> For detailed setup instructions, see the [setup guide](/docs/worker-setup-guides.md)
+
+---
+
 ## Requirements
 
 - ComfyUI
 > Note: Desktop app not currently supported
-- Multiple GPUs
+- Multiple NVIDIA GPUs
+> No additional GPUs? Use [Cloud Workers](https://github.com/robertvoy/ComfyUI-Distributed/blob/main/docs/worker-setup-guides.md#cloud-workers)
 - That's it
 
 ---
@@ -50,9 +63,10 @@
    git clone https://github.com/robertvoy/ComfyUI-Distributed.git
    ```
    
-2. **Restart ComfyUI** - If you'll be using remote/cloud workers, add `--enable-cors-header` to your launch arguments on the master
+2. **Restart ComfyUI**
+   - If you'll be using remote/cloud workers, add `--enable-cors-header` to your launch arguments on the master
 
-3. Read the [setup guide](https://github.com/robertvoy/ComfyUI-Distributed/blob/feature/cloud-workers/docs/worker-setup-guides.md) for adding workers
+3. Read the [setup guide](/docs/worker-setup-guides.md) for adding workers
 
 ---
 
@@ -88,7 +102,7 @@ Generate multiple videos in the time it takes to generate one. Each worker uses 
 8. Run the workflow!
 
 ### Distributed Upscaling
-Accelerate the process by distributing tiles across multiple workers, with speed scaling as you add more GPUs.
+Accelerate Ultimate SD Upscaler by distributing tiles across multiple workers, with speed scaling as you add more GPUs.
 
 ![Clipboard Image (3)](https://github.com/user-attachments/assets/ffb57a0d-7b75-4497-96d2-875d60865a1a)
 
@@ -98,6 +112,7 @@ Accelerate the process by distributing tiles across multiple workers, with speed
 2. Upscale with ESRGAN or similar
 3. Connect to **Ultimate SD Upscale Distributed**
 4. Configure tile settings
+> If your GPUs are similar, set `static_distribution` to true; otherwise, false
 5. Enable workers for faster processing
 
 ---
