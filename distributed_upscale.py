@@ -1076,7 +1076,7 @@ class UltimateSDUpscaleDistributed:
         progress_interval = 5.0
         last_heartbeat_check = time.time()
         stall_count = 0
-        max_stall_count = 10  # Allow 10 iterations with no progress before returning
+        max_stall_count = 120  # Allow 120 iterations with no progress before returning
         last_completed_count = 0
         
         while True:
