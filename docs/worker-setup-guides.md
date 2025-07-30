@@ -47,7 +47,7 @@
 6. **Save** the remote worker configuration.
   
 ## Cloud workers
-> ComfyUI instances running on a cloud service like [Runpod](https://get.runpod.io/0bw29uf3ug0p). 
+> ComfyUI instances running on a cloud service like Runpod. 
 
 ### Deploy Cloud Worker on Runpod
 
