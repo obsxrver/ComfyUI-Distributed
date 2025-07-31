@@ -13,6 +13,8 @@
 ## Local workers
 > These are added automatically on first launch, but you can add them manually if you need to.
 
+[📺 Watch Tutorial](https://youtu.be/p6eE3IlAbOs?si=K7Km0_flmPHwRQwz&t=43)
+
 1. **Open** the Distributed GPU panel.
 2. **Click** "Add Worker" in the UI.
 3. **Configure** your local worker:
@@ -24,6 +26,8 @@
 
 ## Remote workers
 > ComfyUI instances running on completely different computers on your network. These allow you to harness GPU power from other machines. Remote workers must be manually started on their respective computers and are connected via IP address.
+
+[📺 Watch Tutorial](https://youtu.be/p6eE3IlAbOs?si=Oxj3EzPyf4jKDvfG&t=140)
 
 **On the Remote Worker Machine:**
 1. **Launch** ComfyUI with the `--listen --enable-cors-header` arguments. ⚠️ **Required!**
@@ -50,6 +54,8 @@
 > ComfyUI instances running on a cloud service like Runpod. 
 
 ### Deploy Cloud Worker on Runpod
+
+[📺 Watch Tutorial](https://www.youtube.com/watch?v=wxKKWMQhYTk)
 
 **On Runpod:**
 > If using your own template, make sure you launch ComfyUI with the `--enable-cors-header` argument and you `git clone ComfyUI-Distributed` into custom_nodes. ⚠️ **Required!**
