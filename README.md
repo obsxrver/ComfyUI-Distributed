@@ -36,6 +36,8 @@
 
 ## Worker Types
 
+<img width="640" src="https://github.com/user-attachments/assets/f4f86777-0c22-423a-a406-10c378f1ae31" />
+
 ComfyUI Distributed supports three types of workers:
 
 - **Local Workers** - Additional GPUs on the same machine (auto-configured on first launch)
