@@ -1,5 +1,5 @@
 <div align="center">
-<img width="320" src="https://github.com/user-attachments/assets/537d38cc-2e34-4527-bca7-0d79f4120cce" />
+<img width="320" src="https://github.com/user-attachments/assets/533bb98d-0c4a-499f-9bca-5c937e361087" />
 <br><br>
 <a href="https://www.youtube.com/watch?v=p6eE3IlAbOs"><img src="https://img.shields.io/badge/Video_Tutorial-grey?style=flat&logo=youtube&logoColor=white" alt="Video Tutorial"></a>
 <a href="/docs/worker-setup-guides.md"><img src="https://img.shields.io/badge/Setup_Guides-grey?style=flat&logo=gitbook&logoColor=white" alt="Setup Guides"></a>
@@ -36,11 +36,13 @@
 
 ## Worker Types
 
+<img width="640" src="https://github.com/user-attachments/assets/9c85b644-fac2-4d18-b6a0-01a9455b8595" />
+
 ComfyUI Distributed supports three types of workers:
 
 - **Local Workers** - Additional GPUs on the same machine (auto-configured on first launch)
 - **Remote Workers** - GPUs on other computers in your network
-- **Cloud Workers** - GPUs hosted on services like [Runpod](https://get.runpod.io/0bw29uf3ug0p), accessible via secure tunnels
+- **Cloud Workers** - GPUs hosted on a cloud service like Runpod, accessible via secure tunnels
 
 > For detailed setup instructions, see the [setup guide](/docs/worker-setup-guides.md)
 
