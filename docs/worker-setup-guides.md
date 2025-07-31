@@ -5,7 +5,6 @@
 **Worker**: A ComfyUI instance that receives and processes tasks from the master. Workers handle just the GPU computation and send results back to the master. You can have multiple workers connected to a single master, each utilizing their own GPU.
 
 ### Types of Workers
-<img width="640" src="https://github.com/user-attachments/assets/5a164d43-486c-4563-a25d-fd5cbabf2424" />
 
 - **Local workers**: Additional GPUs on the same machine as the master
 - **Remote workers**: GPUs on different computers within your network
