@@ -1740,6 +1740,9 @@ async def job_complete_endpoint(request):
             image_data_list.sort(key=lambda x: x[0])
             tensors = [tensor for _, tensor in image_data_list]
             
+            # Keep the indices for later use
+            indices = [idx for idx, _ in image_data_list]
+            
             # Validate final order
             if metadata:
                 debug_log(f"Reordered {len(tensors)} images based on metadata indices")
@@ -1768,10 +1771,11 @@ async def job_complete_endpoint(request):
             debug_log(f"Current pending jobs: {list(prompt_server.distributed_pending_jobs.keys())}")
             if multi_job_id in prompt_server.distributed_pending_jobs:
                 if batch_size > 0:
-                    # Put batch as single item
+                    # Put batch as single item with indices
                     await prompt_server.distributed_pending_jobs[multi_job_id].put({
                         'worker_id': worker_id,
                         'tensors': tensors,
+                        'indices': indices,
                         'is_last': is_last
                     })
                     debug_log(f"Received batch result for job {multi_job_id} from worker {worker_id}, size={len(tensors)}")
@@ -1934,6 +1938,7 @@ class DistributedCollectorNode:
                     
                     # Check if batch mode
                     tensors = result.get('tensors', [])
+                    indices = result.get('indices', [])  # Get the indices
                     if tensors:
                         # Batch mode
                         debug_log(f"Master - Got batch from worker {worker_id}, size={len(tensors)}, is_last={is_last}")
@@ -1941,9 +1946,15 @@ class DistributedCollectorNode:
                         if worker_id not in worker_images:
                             worker_images[worker_id] = {}
                         
-                        # Add all tensors with sequential indices
-                        for idx, tensor in enumerate(tensors):
-                            worker_images[worker_id][idx] = tensor
+                        # Use actual indices if available, otherwise fall back to sequential
+                        if indices:
+                            for i, tensor in enumerate(tensors):
+                                actual_idx = indices[i]
+                                worker_images[worker_id][actual_idx] = tensor
+                        else:
+                            # Fallback for backward compatibility
+                            for idx, tensor in enumerate(tensors):
+                                worker_images[worker_id][idx] = tensor
                             
                         
                         collected_count += len(tensors)
