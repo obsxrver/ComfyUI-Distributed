@@ -36,7 +36,7 @@
 
 ## Worker Types
 
-<img width="640" src="https://github.com/user-attachments/assets/f4f86777-0c22-423a-a406-10c378f1ae31" />
+<img width="640" src="https://github.com/user-attachments/assets/9c85b644-fac2-4d18-b6a0-01a9455b8595" />
 
 ComfyUI Distributed supports three types of workers:
 
