@@ -4,6 +4,8 @@
 
 **Worker**: A ComfyUI instance that receives and processes tasks from the master. Workers handle just the GPU computation and send results back to the master. You can have multiple workers connected to a single master, each utilizing their own GPU.
 
+<img width="600" src="https://github.com/user-attachments/assets/609c42aa-8a1c-4a3f-939e-f3552fa1d54f" />
+
 ### Types of Workers
 
 - **Local workers**: Additional GPUs on the same machine as the master
@@ -11,9 +13,13 @@
 - **Cloud workers**: GPUs hosted on cloud services like Runpod
 
 ## Local workers
+
+<img align="right" width="200" src="https://github.com/user-attachments/assets/651e4912-7c23-4e32-bd88-250f5175e129" />
+
 > These are added automatically on first launch, but you can add them manually if you need to.
 
-[📺 Watch Tutorial](https://youtu.be/p6eE3IlAbOs?si=K7Km0_flmPHwRQwz&t=43)
+
+📺 [Watch Tutorial](https://youtu.be/p6eE3IlAbOs?si=K7Km0_flmPHwRQwz&t=43)
 
 1. **Open** the Distributed GPU panel.
 2. **Click** "Add Worker" in the UI.
@@ -25,9 +31,13 @@
 4. **Save** and  launch the local worker.
 
 ## Remote workers
+
+<img align="right" width="200"  src="https://github.com/user-attachments/assets/84291921-c44e-4556-94f2-a3b16500f4f9" />
+
+
 > ComfyUI instances running on completely different computers on your network. These allow you to harness GPU power from other machines. Remote workers must be manually started on their respective computers and are connected via IP address.
 
-[📺 Watch Tutorial](https://youtu.be/p6eE3IlAbOs?si=Oxj3EzPyf4jKDvfG&t=140)
+📺 [Watch Tutorial](https://youtu.be/p6eE3IlAbOs?si=Oxj3EzPyf4jKDvfG&t=140)
 
 **On the Remote Worker Machine:**
 1. **Launch** ComfyUI with the `--listen --enable-cors-header` arguments. ⚠️ **Required!**
@@ -51,11 +61,14 @@
 6. **Save** the remote worker configuration.
   
 ## Cloud workers
+
+<img align="right" width="200"  src="https://github.com/user-attachments/assets/a053f3ae-22f0-4e1c-8f2e-f26a1f660adf" />
+
 > ComfyUI instances running on a cloud service like Runpod. 
 
 ### Deploy Cloud Worker on Runpod
 
-[📺 Watch Tutorial](https://www.youtube.com/watch?v=wxKKWMQhYTk)
+📺 [Watch Tutorial](https://www.youtube.com/watch?v=wxKKWMQhYTk)
 
 **On Runpod:**
 > If using your own template, make sure you launch ComfyUI with the `--enable-cors-header` argument and you `git clone ComfyUI-Distributed` into custom_nodes. ⚠️ **Required!**

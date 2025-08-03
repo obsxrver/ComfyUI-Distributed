@@ -36,7 +36,7 @@
 
 ## Worker Types
 
-<img width="640" src="https://github.com/user-attachments/assets/9c85b644-fac2-4d18-b6a0-01a9455b8595" />
+<img width="200" align="right" alt="ComfyUI_temp_khvcc_00034_@0 25x" src="https://github.com/user-attachments/assets/651e4912-7c23-4e32-bd88-250f5175e129" />
 
 ComfyUI Distributed supports three types of workers:
 
@@ -160,4 +160,7 @@ This software is provided "as is" without any warranties, express or implied, in
 ---
 
 ## Support the Project
+
+<img width="200"  src="https://github.com/user-attachments/assets/84291921-c44e-4556-94f2-a3b16500f4f9" />
+
 If my custom nodes have added value to your workflow, consider fueling future development with a coffee! Your support helps keep this project thriving. Buy me a coffee at: https://buymeacoffee.com/robertvoy
