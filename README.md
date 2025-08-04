@@ -169,8 +169,13 @@ This software is provided "as is" without any warranties, express or implied, in
 
 ## Support the Project
 
-<img width="200"  src="https://github.com/user-attachments/assets/84291921-c44e-4556-94f2-a3b16500f4f9" />
+<img width="200" align="right" src="https://github.com/user-attachments/assets/84291921-c44e-4556-94f2-a3b16500f4f9" />
 
-If my custom nodes have added value to your workflow, consider fueling future development with a coffee! Your support helps keep this project thriving. Buy me a coffee at: https://buymeacoffee.com/robertvoy
+If my custom nodes have added value to your workflow, consider fueling future development with a coffee!
+
+Your support helps keep this project thriving.
+
+Buy me a coffee at: https://buymeacoffee.com/robertvoy
+
 
 
