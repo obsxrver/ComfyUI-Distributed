@@ -1,5 +1,5 @@
 <div align="center">
-<img width="320" src="https://github.com/user-attachments/assets/533bb98d-0c4a-499f-9bca-5c937e361087" />
+<img width="250" src="https://github.com/user-attachments/assets/533bb98d-0c4a-499f-9bca-5c937e361087" />
 <br><br>
 <a href="https://www.youtube.com/watch?v=p6eE3IlAbOs"><img src="https://img.shields.io/badge/Video_Tutorial-grey?style=flat&logo=youtube&logoColor=white" alt="Video Tutorial"></a>
 <a href="/docs/worker-setup-guides.md"><img src="https://img.shields.io/badge/Setup_Guides-grey?style=flat&logo=gitbook&logoColor=white" alt="Setup Guides"></a>
@@ -172,4 +172,5 @@ This software is provided "as is" without any warranties, express or implied, in
 <img width="200"  src="https://github.com/user-attachments/assets/84291921-c44e-4556-94f2-a3b16500f4f9" />
 
 If my custom nodes have added value to your workflow, consider fueling future development with a coffee! Your support helps keep this project thriving. Buy me a coffee at: https://buymeacoffee.com/robertvoy
+
 
