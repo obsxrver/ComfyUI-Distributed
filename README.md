@@ -72,6 +72,14 @@ ComfyUI Distributed supports three types of workers:
 
 ---
 
+## Official Sponsor
+
+[<img width="1500" height="339" src="https://github.com/user-attachments/assets/c5f75e1f-3e19-4c57-b05d-151311cd1cf0" />](https://get.runpod.io/0bw29uf3ug0p)
+
+Join Runpod with [this link](https://get.runpod.io/0bw29uf3ug0p) and unlock a special bonus.
+
+---
+
 ## Workflow Examples
 
 ### Basic Parallel Generation
@@ -164,3 +172,4 @@ This software is provided "as is" without any warranties, express or implied, in
 <img width="200"  src="https://github.com/user-attachments/assets/84291921-c44e-4556-94f2-a3b16500f4f9" />
 
 If my custom nodes have added value to your workflow, consider fueling future development with a coffee! Your support helps keep this project thriving. Buy me a coffee at: https://buymeacoffee.com/robertvoy
+
