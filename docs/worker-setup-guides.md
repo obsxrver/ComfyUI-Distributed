@@ -75,7 +75,7 @@
 
 1. Register a [Runpod](https://get.runpod.io/0bw29uf3ug0p) account.
 2. On Runpod, go to Storage > New Network Volume and create a volume that will store the models you need. Start with 40 GB, you can always add more later. Learn more [about Network Volumes](https://docs.runpod.io/pods/storage/create-network-volumes).
-3. Use the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=ak218p52) template.
+3. Use the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=0bw29uf3ug0p) template.
 4. Make sure your Network Volume is mounted and choose a suitable GPU.
 > ⚠️ To use the ComfyUI Distributed Pod template, you will need to filter instances by CUDA 12.8 (add filter in Additional Filters).
 6. Press Edit Template to configure the pod's Environment Variables:
