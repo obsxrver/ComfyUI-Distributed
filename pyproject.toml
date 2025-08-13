@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-Distributed"
 description = "ComfyUI extension that enables multi-GPU processing locally, remotely and in the cloud"
-version = "1.0.6"
+version = "1.0.7"
 license = {file = "LICENSE"}
 dependencies  = []
 
@@ -12,4 +12,4 @@ Repository = "https://github.com/robertvoy/ComfyUI-Distributed"
 [tool.comfy]
 PublisherId = "robertvoy"
 DisplayName = "ComfyUI-Distributed"
-Icon = ""
+Icon = "https://raw.githubusercontent.com/robertvoy/ComfyUI-Distributed/refs/heads/main/web/distributed-logo-icon.png"
