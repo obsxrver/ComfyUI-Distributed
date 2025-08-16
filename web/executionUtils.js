@@ -24,8 +24,17 @@ function convertPathsForPlatform(apiPrompt, targetSeparator) {
         if (typeof obj === 'string') {
             // Only convert strings that look like file paths
             if ((obj.includes('\\') || obj.includes('/')) && isLikelyFilename(obj)) {
-                // Replace any path separator with the target one
-                return obj.replace(/[\\\/]/g, targetSeparator);
+                const trimmed = obj.trim();
+                const hasDrive = /^[A-Za-z]:\\\\|^[A-Za-z]:\//.test(trimmed);
+                const isAbsolute = trimmed.startsWith('/') || trimmed.startsWith('\\\\');
+                const hasProtocol = /^\w+:\/\//.test(trimmed);
+
+                // Preserve annotated relative paths (e.g., "pasted/image.png") as forward slashes
+                if (!hasDrive && !isAbsolute && !hasProtocol) {
+                    return trimmed.replace(/\\/g, '/');
+                }
+                // Replace any path separator with the worker's target separator otherwise
+                return trimmed.replace(/[\\\/]/g, targetSeparator);
             }
             return obj;
         } else if (Array.isArray(obj)) {
@@ -507,9 +516,9 @@ export async function uploadImagesToWorker(extension, workerUrl, images) {
         let cleanName = imageData.name;
         let subfolder = '';
         
-        // Extract subfolder if present
-        if (cleanName.includes('/')) {
-            const parts = cleanName.split('/');
+        // Extract subfolder if present (handle both slash styles)
+        if (cleanName.includes('/') || cleanName.includes('\\')) {
+            const parts = cleanName.replace(/\\/g, '/').split('/');
             subfolder = parts.slice(0, -1).join('/');
             cleanName = parts[parts.length - 1];
         }
