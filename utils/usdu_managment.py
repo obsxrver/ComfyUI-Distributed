@@ -7,19 +7,98 @@ import io
 from aiohttp import web
 import server
 from PIL import Image
-import numpy as np
-import torch
 
 # Import from other utilities
 from .logging import debug_log, log
 from .network import handle_api_error, get_client_session
-from .image import tensor_to_pil
+from .image import pil_to_tensor
 
 # Configure maximum payload size (50MB default, configurable via environment variable)
 MAX_PAYLOAD_SIZE = int(os.environ.get('COMFYUI_MAX_PAYLOAD_SIZE', str(50 * 1024 * 1024)))
 
 # Import HEARTBEAT_TIMEOUT from constants
 from .constants import HEARTBEAT_TIMEOUT
+
+
+def _parse_tiles_from_form(data):
+    """Parse tiles submitted via multipart/form-data into a list of tile dicts.
+
+    Expects the following fields in the aiohttp form data:
+    - 'tiles_metadata': JSON list with per-tile metadata items containing at least
+      'tile_idx', 'x', 'y', 'extracted_width', 'extracted_height'. Optional
+      'batch_idx' and 'global_idx' are included when available.
+    - 'tile_{i}': image bytes for each tile described in tiles_metadata (PNG).
+    - 'padding': integer padding used during extraction (optional; defaults 0).
+
+    Returns: list of dicts with keys: 'tensor', 'tile_idx', 'x', 'y',
+    'extracted_width', 'extracted_height', and optional 'batch_idx', 'global_idx',
+    plus 'padding'.
+    """
+    try:
+        # Parse padding if present
+        padding = int(data.get('padding', 0)) if data.get('padding') is not None else 0
+    except Exception:
+        padding = 0
+
+    # Parse tiles metadata (JSON list)
+    meta_raw = data.get('tiles_metadata')
+    if meta_raw is None:
+        raise ValueError("Missing tiles_metadata")
+
+    try:
+        metadata = json.loads(meta_raw)
+    except Exception as e:
+        raise ValueError(f"Invalid tiles_metadata JSON: {e}")
+
+    if not isinstance(metadata, list):
+        raise ValueError("tiles_metadata must be a list")
+
+    tiles = []
+    # Iterate over metadata items and corresponding uploaded files tile_0, tile_1, ...
+    for i, meta in enumerate(metadata):
+        file_field = data.get(f'tile_{i}')
+        if file_field is None or not hasattr(file_field, 'file'):
+            raise ValueError(f"Missing tile data for index {i}")
+
+        # Read image bytes and decode to PIL
+        raw = file_field.file.read()
+        try:
+            img = Image.open(io.BytesIO(raw)).convert("RGB")
+        except Exception as e:
+            raise ValueError(f"Invalid image data for tile {i}: {e}")
+
+        # Convert to tensor [1, H, W, C]
+        tile_tensor = pil_to_tensor(img)
+
+        # Build tile dictionary
+        try:
+            tile_info = {
+                'tensor': tile_tensor,
+                'tile_idx': int(meta.get('tile_idx', i)),
+                'x': int(meta.get('x', 0)),
+                'y': int(meta.get('y', 0)),
+                'extracted_width': int(meta.get('extracted_width', img.width)),
+                'extracted_height': int(meta.get('extracted_height', img.height)),
+                'padding': int(padding),
+            }
+        except Exception as e:
+            raise ValueError(f"Invalid metadata values for tile {i}: {e}")
+
+        # Optional fields
+        if 'batch_idx' in meta:
+            try:
+                tile_info['batch_idx'] = int(meta['batch_idx'])
+            except Exception:
+                pass
+        if 'global_idx' in meta:
+            try:
+                tile_info['global_idx'] = int(meta['global_idx'])
+            except Exception:
+                pass
+
+        tiles.append(tile_info)
+
+    return tiles
 
 
 # Unified Job Data Structure Keys
@@ -35,6 +114,45 @@ JOB_NUM_TILES_PER_IMAGE = 'num_tiles_per_image'  # For static
 # Task Types
 TASK_TYPE_TILE = 'tile'
 TASK_TYPE_IMAGE = 'image'
+
+from typing import List, Optional
+
+async def init_dynamic_job(multi_job_id: str, batch_size: int, enabled_workers: List[str], all_indices: Optional[List[int]] = None):
+    """Initialize queue for dynamic mode (per-image), with collector fields.
+
+    - Creates JOB_PENDING_TASKS with image indices
+    - Adds 'completed_images' dict and 'pending_images' alias used by collectors
+    """
+    await _init_job_queue(
+        multi_job_id,
+        'dynamic',
+        batch_size=batch_size,
+        all_indices=all_indices or list(range(batch_size)),
+        enabled_workers=enabled_workers,
+    )
+
+    prompt_server = ensure_tile_jobs_initialized()
+    async with prompt_server.distributed_tile_jobs_lock:
+        job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
+        job_data['completed_images'] = {}
+        job_data['pending_images'] = job_data[JOB_PENDING_TASKS]
+        debug_log(f"Dynamic job {multi_job_id} initialized with {batch_size} images")
+
+
+async def init_static_job_batched(multi_job_id: str, batch_size: int, num_tiles_per_image: int, enabled_workers: List[str]):
+    """Initialize queue for static mode (batched-per-tile).
+
+    - Populates JOB_PENDING_TASKS with tile ids [0..num_tiles_per_image-1]
+    """
+    await _init_job_queue(
+        multi_job_id,
+        'static',
+        batch_size=batch_size,
+        num_tiles_per_image=num_tiles_per_image,
+        enabled_workers=enabled_workers,
+        batched_static=True,
+    )
+    debug_log(f"Static job {multi_job_id} initialized with {num_tiles_per_image} tile ids for batch {batch_size}")
 
 async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_image=None, all_indices=None, enabled_workers=None, task_assignments=None, batched_static: bool = False):
     """Unified initialization for job queues in static and dynamic modes."""
@@ -87,34 +205,7 @@ async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_ima
 
         prompt_server.distributed_pending_tile_jobs[multi_job_id] = job_data
 
-def _distribute_tasks(items: list, num_participants: int) -> list[list[any]]:
-    """Distribute a list of items among N participants (master + workers)."""
-    if num_participants <= 1:
-        return [items]
-
-    items_per_participant = len(items) // num_participants
-    remainder = len(items) % num_participants
-    assignments = []
-    start_idx = 0
-    for i in range(num_participants):
-        count = items_per_participant + (1 if i < remainder else 0)
-        end_idx = start_idx + count
-        assignments.append(items[start_idx:end_idx])
-        start_idx = end_idx
-    return assignments
-
-async def _get_next_task(multi_job_id):
-    """Get next task from pending queue (generalized for tiles/images)."""
-    prompt_server = ensure_tile_jobs_initialized()
-    async with prompt_server.distributed_tile_jobs_lock:
-        job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
-        if not job_data or JOB_PENDING_TASKS not in job_data:
-            return None
-        try:
-            task_id = await asyncio.wait_for(job_data[JOB_PENDING_TASKS].get(), timeout=1.0)
-            return task_id
-        except asyncio.TimeoutError:
-            return None
+# Note: legacy task distribution and queue pull helpers removed
 
 async def _drain_results_queue(multi_job_id):
     """Drain pending results from queue and update completed_tasks. Returns count drained."""
@@ -331,108 +422,10 @@ async def submit_tiles_endpoint(request):
                         debug_log(f"Received completion signal from worker {worker_id}")
                         return web.json_response({"status": "success"})
         
-        # Handle batch tiles with metadata
-        if batch_size > 0:
-            padding = int(data.get('padding', 32))
-            metadata_field = data.get('tiles_metadata')
-            if metadata_field:
-                if hasattr(metadata_field, 'file'):
-                    metadata_str = metadata_field.file.read().decode('utf-8')
-                elif isinstance(metadata_field, (bytes, bytearray)):
-                    metadata_str = metadata_field.decode('utf-8')
-                else:
-                    metadata_str = str(metadata_field)
-                
-                metadata = json.loads(metadata_str)
-                if len(metadata) != batch_size:
-                    return await handle_api_error(request, "Metadata length mismatch", 400)
-                
-                tile_data_list = []
-                
-                for i in range(batch_size):
-                    tile_field = data.get(f'tile_{i}')
-                    if tile_field is None:
-                        continue
-                    
-                    img_data = tile_field.file.read()
-                    img = Image.open(io.BytesIO(img_data)).convert("RGB")
-                    img_np = np.array(img).astype(np.float32) / 255.0
-                    tensor = torch.from_numpy(img_np)[None,]
-                    
-                    if i < len(metadata):
-                        tile_meta = metadata[i]
-                        tile_idx = tile_meta.get('tile_idx', i)
-                        tile_info = {
-                            'tensor': tensor,
-                            'tile_idx': tile_idx,
-                            'x': tile_meta['x'],
-                            'y': tile_meta['y'],
-                            'extracted_width': tile_meta['extracted_width'],
-                            'extracted_height': tile_meta['extracted_height'],
-                            'padding': padding,
-                            'batch_idx': tile_meta.get('batch_idx', 0),
-                            'global_idx': tile_meta.get('global_idx', tile_idx)
-                        }
-                        tile_data_list.append(tile_info)
-                    
-                tile_data_list.sort(key=lambda x: x['tile_idx'])
-                tiles.extend(tile_data_list)
-            else:
-                # Legacy format
-                for i in range(batch_size):
-                    tile_field = data.get(f'tile_{i}')
-                    if tile_field is None:
-                        continue
-                    
-                    tile_idx = int(data.get(f'tile_{i}_idx', i))
-                    x = int(data.get(f'tile_{i}_x', 0))
-                    y = int(data.get(f'tile_{i}_y', 0))
-                    extracted_width = int(data.get(f'tile_{i}_width', 512))
-                    extracted_height = int(data.get(f'tile_{i}_height', 512))
-                    
-                    img_data = tile_field.file.read()
-                    img = Image.open(io.BytesIO(img_data)).convert("RGB")
-                    img_np = np.array(img).astype(np.float32) / 255.0
-                    tensor = torch.from_numpy(img_np)[None,]
-                    
-                    tiles.append({
-                        'tensor': tensor,
-                        'tile_idx': tile_idx,
-                        'x': x,
-                        'y': y,
-                        'extracted_width': extracted_width,
-                        'extracted_height': extracted_height,
-                        'padding': padding
-                    })
-        else:
-            # Single tile legacy
-            image_file = data.get('image')
-            if not image_file:
-                return await handle_api_error(request, "Missing image data", 400)
-                
-            tile_idx = int(data.get('tile_idx', 0))
-            x = int(data.get('x', 0))
-            y = int(data.get('y', 0))
-            extracted_width = int(data.get('extracted_width', 512))
-            extracted_height = int(data.get('extracted_height', 512))
-            padding = int(data.get('padding', 32))
-            
-            img_data = image_file.file.read()
-            img = Image.open(io.BytesIO(img_data)).convert("RGB")
-            img_np = np.array(img).astype(np.float32) / 255.0
-            tensor = torch.from_numpy(img_np)[None,]
-            
-            tiles = [{
-                'tensor': tensor,
-                'tile_idx': tile_idx,
-                'x': x,
-                'y': y,
-                'extracted_width': extracted_width,
-                'extracted_height': extracted_height,
-                'padding': padding,
-                'batch_idx': 0,
-                'global_idx': tile_idx
-            }]
+        try:
+            tiles = _parse_tiles_from_form(data)
+        except ValueError as e:
+            return await handle_api_error(request, str(e), 400)
 
         # Submit tiles to queue
         async with prompt_server.distributed_tile_jobs_lock:
@@ -448,6 +441,7 @@ async def submit_tiles_endpoint(request):
                         'tiles': tiles,
                         'is_last': is_last
                     })
+                    debug_log(f"Received {len(tiles)} tiles from worker {worker_id} (is_last={is_last})")
                 else:
                     await q.put({
                         'worker_id': worker_id,
@@ -523,188 +517,7 @@ async def submit_image_endpoint(request):
     except Exception as e:
         return await handle_api_error(request, e, 500)
 
-# Keep legacy endpoint for backward compatibility
-@server.PromptServer.instance.routes.post("/distributed/tile_complete")
-async def tile_complete_endpoint(request):
-    try:
-        content_length = request.headers.get('content-length')
-        if content_length and int(content_length) > MAX_PAYLOAD_SIZE:
-            return await handle_api_error(request, f"Payload too large: {content_length} bytes", 413)
-        
-        data = await request.post()
-        multi_job_id = data.get('multi_job_id')
-        worker_id = data.get('worker_id')
-        is_last = data.get('is_last', 'False').lower() == 'true'
-        
-        if multi_job_id is None or worker_id is None:
-            return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
-
-        prompt_server = ensure_tile_jobs_initialized()
-        
-        if 'full_image' in data and 'image_idx' in data:
-            image_idx = int(data.get('image_idx'))
-            img_data = data['full_image'].file.read()
-            img = Image.open(io.BytesIO(img_data)).convert("RGB")
-            
-            debug_log(f"Received full image {image_idx} from worker {worker_id}")
-            
-            async with prompt_server.distributed_tile_jobs_lock:
-                if multi_job_id in prompt_server.distributed_pending_tile_jobs:
-                    job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
-                    if JOB_MODE in job_data and job_data[JOB_MODE] != 'dynamic':
-                        return await handle_api_error(request, "Mode mismatch for image submission", 400)
-                    if JOB_QUEUE in job_data:
-                        await job_data[JOB_QUEUE].put({
-                            'worker_id': worker_id,
-                            'image_idx': image_idx,
-                            'image': img,
-                            'is_last': is_last
-                        })
-                        return web.json_response({"status": "success"})
-        
-        batch_size = int(data.get('batch_size', 0))
-        tiles = []
-        
-        if batch_size == 0 and is_last:
-            async with prompt_server.distributed_tile_jobs_lock:
-                if multi_job_id in prompt_server.distributed_pending_tile_jobs:
-                    job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
-                    if JOB_QUEUE in job_data:
-                        await job_data[JOB_QUEUE].put({
-                            'worker_id': worker_id,
-                            'is_last': True,
-                            'tiles': []
-                        })
-                        debug_log(f"Received completion signal from worker {worker_id}")
-                        return web.json_response({"status": "success"})
-        
-        if batch_size > 0:
-            padding = int(data.get('padding', 32))
-            metadata_field = data.get('tiles_metadata')
-            if metadata_field:
-                if hasattr(metadata_field, 'file'):
-                    metadata_str = metadata_field.file.read().decode('utf-8')
-                elif isinstance(metadata_field, (bytes, bytearray)):
-                    metadata_str = metadata_field.decode('utf-8')
-                else:
-                    metadata_str = str(metadata_field)
-                
-                metadata = json.loads(metadata_str)
-                if len(metadata) != batch_size:
-                    return await handle_api_error(request, "Metadata length mismatch", 400)
-                
-                tile_data_list = []
-                
-                for i in range(batch_size):
-                    tile_field = data.get(f'tile_{i}')
-                    if tile_field is None:
-                        continue
-                    
-                    img_data = tile_field.file.read()
-                    img = Image.open(io.BytesIO(img_data)).convert("RGB")
-                    img_np = np.array(img).astype(np.float32) / 255.0
-                    tensor = torch.from_numpy(img_np)[None,]
-                    
-                    if i < len(metadata):
-                        tile_meta = metadata[i]
-                        tile_idx = tile_meta.get('tile_idx', i)
-                        tile_info = {
-                            'tensor': tensor,
-                            'tile_idx': tile_idx,
-                            'x': tile_meta['x'],
-                            'y': tile_meta['y'],
-                            'extracted_width': tile_meta['extracted_width'],
-                            'extracted_height': tile_meta['extracted_height'],
-                            'padding': padding,
-                            'batch_idx': tile_meta.get('batch_idx', 0),
-                            'global_idx': tile_meta.get('global_idx', tile_idx)
-                        }
-                        tile_data_list.append(tile_info)
-                    
-                tile_data_list.sort(key=lambda x: x['tile_idx'])
-                tiles.extend(tile_data_list)
-            else:
-                # Legacy
-                for i in range(batch_size):
-                    tile_field = data.get(f'tile_{i}')
-                    if tile_field is None:
-                        continue
-                    
-                    tile_idx = int(data.get(f'tile_{i}_idx', i))
-                    x = int(data.get(f'tile_{i}_x', 0))
-                    y = int(data.get(f'tile_{i}_y', 0))
-                    extracted_width = int(data.get(f'tile_{i}_width', 512))
-                    extracted_height = int(data.get(f'tile_{i}_height', 512))
-                    
-                    img_data = tile_field.file.read()
-                    img = Image.open(io.BytesIO(img_data)).convert("RGB")
-                    img_np = np.array(img).astype(np.float32) / 255.0
-                    tensor = torch.from_numpy(img_np)[None,]
-                    
-                    tiles.append({
-                        'tensor': tensor,
-                        'tile_idx': tile_idx,
-                        'x': x,
-                        'y': y,
-                        'extracted_width': extracted_width,
-                        'extracted_height': extracted_height,
-                        'padding': padding
-                    })
-        else:
-            # Single tile legacy
-            image_file = data.get('image')
-            if not image_file:
-                return await handle_api_error(request, "Missing image data", 400)
-                
-            tile_idx = int(data.get('tile_idx', 0))
-            x = int(data.get('x', 0))
-            y = int(data.get('y', 0))
-            extracted_width = int(data.get('extracted_width', 512))
-            extracted_height = int(data.get('extracted_height', 512))
-            padding = int(data.get('padding', 32))
-            
-            img_data = image_file.file.read()
-            img = Image.open(io.BytesIO(img_data)).convert("RGB")
-            img_np = np.array(img).astype(np.float32) / 255.0
-            tensor = torch.from_numpy(img_np)[None,]
-            
-            tiles = [{
-                'tensor': tensor,
-                'tile_idx': tile_idx,
-                'x': x,
-                'y': y,
-                'extracted_width': extracted_width,
-                'extracted_height': extracted_height,
-                'padding': padding,
-                'batch_idx': 0,
-                'global_idx': tile_idx
-            }]
-
-        async with prompt_server.distributed_tile_jobs_lock:
-            if multi_job_id in prompt_server.distributed_pending_tile_jobs:
-                job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
-                if JOB_MODE in job_data and job_data[JOB_MODE] != 'static':
-                    return await handle_api_error(request, "Mode mismatch for tile submission", 400)
-                
-                q = job_data[JOB_QUEUE]
-                if batch_size > 0 or len(tiles) > 0:
-                    await q.put({
-                        'worker_id': worker_id,
-                        'tiles': tiles,
-                        'is_last': is_last
-                    })
-                else:
-                    await q.put({
-                        'worker_id': worker_id,
-                        'is_last': True,
-                        'tiles': []
-                    })
-                    
-                return web.json_response({"status": "success"})
-            else:
-                return await handle_api_error(request, "Job not found", 404)
-    except Exception as e:
-        return await handle_api_error(request, e, 500)
+# Note: Removed legacy /distributed/tile_complete endpoint. Use /distributed/submit_tiles.
 
 
 
