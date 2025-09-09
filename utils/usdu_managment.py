@@ -36,7 +36,7 @@ JOB_NUM_TILES_PER_IMAGE = 'num_tiles_per_image'  # For static
 TASK_TYPE_TILE = 'tile'
 TASK_TYPE_IMAGE = 'image'
 
-async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_image=None, all_indices=None, enabled_workers=None, task_assignments=None):
+async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_image=None, all_indices=None, enabled_workers=None, task_assignments=None, batched_static: bool = False):
     """Unified initialization for job queues in static and dynamic modes."""
     prompt_server = ensure_tile_jobs_initialized()
     async with prompt_server.distributed_tile_jobs_lock:
@@ -61,12 +61,19 @@ async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_ima
             debug_log(f"Initialized dynamic queue with {batch_size} pending images")
         elif mode == 'static':
             job_data[JOB_NUM_TILES_PER_IMAGE] = num_tiles_per_image
-            # For static with dynamic distribution, populate all tile indices in pending queue
+            job_data[JOB_BATCH_SIZE] = batch_size
+            job_data['batched_static'] = bool(batched_static)
+            # For batched static distribution, populate only tile ids [0..num_tiles_per_image-1]
             pending_queue = job_data[JOB_PENDING_TASKS]
-            total_tiles = batch_size * num_tiles_per_image
-            for i in range(total_tiles):
-                await pending_queue.put(i)
-            debug_log(f"Initialized static queue with {total_tiles} pending tiles for dynamic distribution")
+            if batched_static and num_tiles_per_image is not None:
+                for i in range(num_tiles_per_image):
+                    await pending_queue.put(i)
+                debug_log(f"Initialized static queue (batched) with {num_tiles_per_image} tile ids for dynamic distribution across batch of {batch_size}")
+            else:
+                total_tiles = batch_size * num_tiles_per_image
+                for i in range(total_tiles):
+                    await pending_queue.put(i)
+                debug_log(f"Initialized static queue with {total_tiles} pending tiles for dynamic distribution")
             
             # Keep backward compatibility - if task assignments provided, still track them
             if task_assignments and enabled_workers:
@@ -708,7 +715,8 @@ def clone_control_chain(control, clone_hint=True):
         return None
     new_control = copy.copy(control)  # Shallow copy (shares model)
     if clone_hint and hasattr(control, 'cond_hint_original'):
-        new_control.cond_hint_original = control.cond_hint_original.clone()
+        hint = getattr(control, 'cond_hint_original', None)
+        new_control.cond_hint_original = hint.clone() if hint is not None else None
     if hasattr(control, 'previous_controlnet'):
         new_control.previous_controlnet = clone_control_chain(control.previous_controlnet, clone_hint)
     return new_control
@@ -722,10 +730,12 @@ def clone_conditioning(cond_list, clone_hints=True):
         if 'control' in new_dict:
             new_dict['control'] = clone_control_chain(new_dict['control'], clone_hints)
         if 'mask' in new_dict:
-            new_dict['mask'] = new_dict['mask'].clone()
+            if new_dict['mask'] is not None:
+                new_dict['mask'] = new_dict['mask'].clone()
         # Handle other potential fields if needed
         if 'pooled_output' in new_dict:
-            new_dict['pooled_output'] = new_dict['pooled_output'].clone()
+            if new_dict['pooled_output'] is not None:
+                new_dict['pooled_output'] = new_dict['pooled_output'].clone()
         if 'area' in new_dict:
             new_dict['area'] = new_dict['area'][:]  # Shallow copy list/tuple
         new_cond.append([new_emb, new_dict])
