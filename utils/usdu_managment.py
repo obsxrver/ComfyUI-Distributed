@@ -805,7 +805,7 @@ async def request_image_endpoint(request):
                         return web.json_response({"image_idx": task_idx, "estimated_remaining": remaining})
                     else:  # static
                         debug_log(f"UltimateSDUpscale API - Assigned tile {task_idx} to worker {worker_id}")
-                        return web.json_response({"tile_idx": task_idx, "estimated_remaining": remaining})
+                        return web.json_response({"tile_idx": task_idx, "estimated_remaining": remaining, "batched_static": job_data.get('batched_static', False)})
                 except asyncio.TimeoutError:
                     if mode == 'dynamic':
                         return web.json_response({"image_idx": None})
