@@ -1199,7 +1199,7 @@ class UltimateSDUpscaleDistributed:
             img = tensor_to_pil(tile_data['tile'], 0)
             bio = io.BytesIO()
             # Keep compression low to balance speed and size; adjust if needed
-            img.save(bio, format='PNG', compress_level=1)
+            img.save(bio, format='PNG', compress_level=0)
             raw = bio.getvalue()
             encoded.append({
                 'bytes': raw,
@@ -1302,6 +1302,11 @@ class UltimateSDUpscaleDistributed:
             image_pil = tensor_to_pil(upscaled_image[b:b+1], 0).convert('RGB')
             result_images.append(image_pil.copy())
 
+        # Precompute tile masks once
+        tile_masks = []
+        for tx, ty in all_tiles:
+            tile_masks.append(self.create_tile_mask(width, height, tx, ty, tile_width, tile_height, mask_blur))
+
         # Process tiles batched across images
         for tile_idx, (tx, ty) in enumerate(all_tiles):
             # Extract batched tile
@@ -1315,8 +1320,8 @@ class UltimateSDUpscaleDistributed:
                                                        seed, steps, cfg, sampler_name, scheduler, denoise,
                                                        tiled_decode, region, (width, height))
 
-            # Blend results back into each image
-            tile_mask = self.create_tile_mask(width, height, tx, ty, tile_width, tile_height, mask_blur)
+            # Blend results back into each image using cached mask
+            tile_mask = tile_masks[tile_idx]
             for b in range(batch_size):
                 tile_pil = tensor_to_pil(processed_batch, b)
                 # Resize back to extracted size

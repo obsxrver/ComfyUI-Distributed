@@ -11,7 +11,7 @@ from PIL import Image
 # Import from other utilities
 from .logging import debug_log, log
 from .network import handle_api_error, get_client_session
-from .image import pil_to_tensor
+# We avoid converting to tensors on the master for tiles; blending uses PIL
 
 # Configure maximum payload size (50MB default, configurable via environment variable)
 MAX_PAYLOAD_SIZE = int(os.environ.get('COMFYUI_MAX_PAYLOAD_SIZE', str(50 * 1024 * 1024)))
@@ -30,7 +30,7 @@ def _parse_tiles_from_form(data):
     - 'tile_{i}': image bytes for each tile described in tiles_metadata (PNG).
     - 'padding': integer padding used during extraction (optional; defaults 0).
 
-    Returns: list of dicts with keys: 'tensor', 'tile_idx', 'x', 'y',
+    Returns: list of dicts with keys: 'image', 'tile_idx', 'x', 'y',
     'extracted_width', 'extracted_height', and optional 'batch_idx', 'global_idx',
     plus 'padding'.
     """
@@ -67,14 +67,10 @@ def _parse_tiles_from_form(data):
         except Exception as e:
             raise ValueError(f"Invalid image data for tile {i}: {e}")
 
-        # Convert to tensor [1, H, W, C] (keep PIL too for faster blending later)
-        tile_tensor = pil_to_tensor(img)
-
-        # Build tile dictionary
+        # Build tile dictionary (store PIL only; master blends via PIL)
         try:
             tile_info = {
-                'tensor': tile_tensor,
-                'image': img,  # keep PIL to avoid reconversion later
+                'image': img,
                 'tile_idx': int(meta.get('tile_idx', i)),
                 'x': int(meta.get('x', 0)),
                 'y': int(meta.get('y', 0)),
@@ -153,7 +149,7 @@ async def init_static_job_batched(multi_job_id: str, batch_size: int, num_tiles_
         enabled_workers=enabled_workers,
         batched_static=True,
     )
-    debug_log(f"Job {multi_job_id} initialized with {num_tiles_per_image} tile ids for batch {batch_size}")
+    # Initialization handled by master; avoid duplicate init logs here
 
 async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_image=None, all_indices=None, enabled_workers=None, task_assignments=None, batched_static: bool = False):
     """Unified initialization for job queues in static and dynamic modes."""
@@ -187,12 +183,10 @@ async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_ima
             if batched_static and num_tiles_per_image is not None:
                 for i in range(num_tiles_per_image):
                     await pending_queue.put(i)
-                debug_log(f"Initialized tile-id queue with {num_tiles_per_image} ids for batch {batch_size}")
             else:
                 total_tiles = batch_size * num_tiles_per_image
                 for i in range(total_tiles):
                     await pending_queue.put(i)
-                debug_log(f"Initialized tile queue with {total_tiles} pending tasks")
             
             # Keep backward compatibility - if task assignments provided, still track them
             if task_assignments and enabled_workers:
@@ -209,7 +203,10 @@ async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_ima
 # Note: legacy task distribution and queue pull helpers removed
 
 async def _drain_results_queue(multi_job_id):
-    """Drain pending results from queue and update completed_tasks. Returns count drained."""
+    """Drain pending results from queue and update completed_tasks. Returns count drained.
+
+    Uses non-blocking get_nowait to avoid await timeouts and reduce latency.
+    """
     prompt_server = ensure_tile_jobs_initialized()
     async with prompt_server.distributed_tile_jobs_lock:
         job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
@@ -219,45 +216,46 @@ async def _drain_results_queue(multi_job_id):
         completed_tasks = job_data[JOB_COMPLETED_TASKS]
 
         collected = 0
-        while not q.empty():
+        while True:
             try:
-                result = await asyncio.wait_for(q.get(), timeout=0.1)
-                worker_id = result['worker_id']
-                is_last = result.get('is_last', False)
-                
-                if 'image_idx' in result and 'image' in result:
-                    task_id = result['image_idx']
-                    if task_id not in completed_tasks:
-                        completed_tasks[task_id] = result['image']
-                        collected += 1
-                elif 'tiles' in result:
-                    for tile_data in result['tiles']:
-                        task_id = tile_data.get('global_idx', tile_data['tile_idx'])
-                        if task_id not in completed_tasks:
-                            completed_tasks[task_id] = tile_data
-                            collected += 1
-                elif 'tensor' in result and 'tile_idx' in result:  # Single tile backward compat
-                    task_id = result.get('global_idx', result['tile_idx'])
-                    if task_id not in completed_tasks:
-                        completed_tasks[task_id] = {
-                            'tensor': result['tensor'],
-                            'tile_idx': result['tile_idx'],
-                            'x': result['x'],
-                            'y': result['y'],
-                            'extracted_width': result['extracted_width'],
-                            'extracted_height': result['extracted_height'],
-                            'padding': result['padding'],
-                            'batch_idx': result.get('batch_idx', 0),
-                            'global_idx': task_id
-                        }
-                        collected += 1
-
-                if is_last:
-                    # Track worker completion
-                    if worker_id in job_data[JOB_WORKER_STATUS]:
-                        del job_data[JOB_WORKER_STATUS][worker_id]
-            except asyncio.TimeoutError:
+                result = q.get_nowait()
+            except asyncio.QueueEmpty:
                 break
+
+            worker_id = result['worker_id']
+            is_last = result.get('is_last', False)
+
+            if 'image_idx' in result and 'image' in result:
+                task_id = result['image_idx']
+                if task_id not in completed_tasks:
+                    completed_tasks[task_id] = result['image']
+                    collected += 1
+            elif 'tiles' in result:
+                for tile_data in result['tiles']:
+                    task_id = tile_data.get('global_idx', tile_data['tile_idx'])
+                    if task_id not in completed_tasks:
+                        completed_tasks[task_id] = tile_data
+                        collected += 1
+            elif 'tensor' in result and 'tile_idx' in result:  # Single tile backward compat
+                task_id = result.get('global_idx', result['tile_idx'])
+                if task_id not in completed_tasks:
+                    completed_tasks[task_id] = {
+                        'tensor': result['tensor'],
+                        'tile_idx': result['tile_idx'],
+                        'x': result['x'],
+                        'y': result['y'],
+                        'extracted_width': result['extracted_width'],
+                        'extracted_height': result['extracted_height'],
+                        'padding': result['padding'],
+                        'batch_idx': result.get('batch_idx', 0),
+                        'global_idx': task_id
+                    }
+                    collected += 1
+
+            if is_last:
+                # Track worker completion
+                if worker_id in job_data[JOB_WORKER_STATUS]:
+                    del job_data[JOB_WORKER_STATUS][worker_id]
 
         return collected
 
@@ -324,42 +322,6 @@ async def _cleanup_job(multi_job_id):
             debug_log(f"Cleaned up job {multi_job_id}")
 
 # API Endpoints (generalized)
-
-@server.PromptServer.instance.routes.post("/distributed/request_task")
-async def request_task_endpoint(request):
-    try:
-        data = await request.json()
-        worker_id = data.get('worker_id')
-        multi_job_id = data.get('multi_job_id')
-        
-        if not worker_id or not multi_job_id:
-            return await handle_api_error(request, "Missing worker_id or multi_job_id", 400)
-        
-        prompt_server = ensure_tile_jobs_initialized()
-        async with prompt_server.distributed_tile_jobs_lock:
-            if multi_job_id in prompt_server.distributed_pending_tile_jobs:
-                job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
-                mode = job_data.get(JOB_MODE)
-                pending_queue = job_data.get(JOB_PENDING_TASKS)
-                if pending_queue:
-                    try:
-                        task_id = await asyncio.wait_for(pending_queue.get(), timeout=0.1)
-                        if JOB_ASSIGNED_TO_WORKERS in job_data and worker_id in job_data[JOB_ASSIGNED_TO_WORKERS]:
-                            job_data[JOB_ASSIGNED_TO_WORKERS][worker_id].append(task_id)
-                        if JOB_WORKER_STATUS in job_data:
-                            job_data[JOB_WORKER_STATUS][worker_id] = time.time()
-                        remaining = pending_queue.qsize()
-                        debug_log(f"Assigned task {task_id} to worker {worker_id} in {mode} mode")
-                        return web.json_response({"task_id": task_id, "estimated_remaining": remaining, "mode": mode})
-                    except asyncio.TimeoutError:
-                        return web.json_response({"task_id": None})
-                else:
-                    return await handle_api_error(request, "No pending tasks", 400)
-            else:
-                return await handle_api_error(request, "Job not found", 404)
-    except Exception as e:
-        return await handle_api_error(request, e, 500)
-
 
 @server.PromptServer.instance.routes.post("/distributed/heartbeat")
 async def heartbeat_endpoint(request):
