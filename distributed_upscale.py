@@ -277,7 +277,7 @@ class UltimateSDUpscaleDistributed:
         
         # Convert and blend
         processed_pil = tensor_to_pil(processed_tile, 0)
-        # Create mask for this specific tile
+        # Create mask for this specific tile (no cache here; only used in single-tile path)
         tile_mask = self.create_tile_mask(image_width, image_height, x, y, tile_width, tile_height, mask_blur)
         # Use extraction position and size for blending
         result_image = self.blend_tile(result_image, processed_pil, 
@@ -353,9 +353,8 @@ class UltimateSDUpscaleDistributed:
                             # Use global_idx as key if available (for batch processing)
                             key = tile_data.get('global_idx', tile_idx)
                             
-                            # Store the full tile data including metadata
-                            collected_results[key] = {
-                                'tensor': tile_data['tensor'],
+                            # Store the full tile data including metadata; prefer PIL image if present
+                            entry = {
                                 'tile_idx': tile_idx,
                                 'x': tile_data['x'],
                                 'y': tile_data['y'],
@@ -366,6 +365,11 @@ class UltimateSDUpscaleDistributed:
                                 'batch_idx': tile_data.get('batch_idx', 0),
                                 'global_idx': tile_data.get('global_idx', tile_idx)
                             }
+                            if 'image' in tile_data:
+                                entry['image'] = tile_data['image']
+                            elif 'tensor' in tile_data:
+                                entry['tensor'] = tile_data['tensor']
+                            collected_results[key] = entry
                     else:
                         # Single tile mode (backward compat)
                         tile_idx = result['tile_idx']
@@ -935,7 +939,7 @@ class UltimateSDUpscaleDistributed:
                             break
             
             # Wait a bit before next check
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
         
         # Get all completed tasks for return
         return await self._get_all_completed_tasks(multi_job_id)
@@ -967,9 +971,14 @@ class UltimateSDUpscaleDistributed:
             f"Initialized tile-id queue with {num_tiles_per_image} ids for batch {batch_size}"
         )
 
+        # Precompute masks for all tile positions to avoid repeated Gaussian blur work during blending
+        tile_masks = []
+        for idx, (tx, ty) in enumerate(all_tiles):
+            tile_masks.append(self.create_tile_mask(width, height, tx, ty, tile_width, tile_height, mask_blur))
+
         processed_count = 0
         consecutive_no_tile = 0
-        max_consecutive_no_tile = 5
+        max_consecutive_no_tile = 2
 
         while processed_count < total_tiles:
             comfy.model_management.throw_exception_if_processing_interrupted()
@@ -991,7 +1000,7 @@ class UltimateSDUpscaleDistributed:
                     seed, steps, cfg, sampler_name, scheduler, denoise, tiled_decode,
                     region, (width, height)
                 )
-                tile_mask = self.create_tile_mask(width, height, tx, ty, tile_width, tile_height, mask_blur)
+                tile_mask = tile_masks[tile_id]
                 for b in range(batch_size):
                     tile_pil = tensor_to_pil(processed_batch, b)
                     if tile_pil.size != (ew, eh):
@@ -1087,7 +1096,7 @@ class UltimateSDUpscaleDistributed:
         # Blend worker tiles synchronously
         for global_idx, tile_data in collected_tasks.items():
             # Skip tiles that don't have tensor data (already processed)
-            if 'tensor' not in tile_data:
+            if 'tensor' not in tile_data and 'image' not in tile_data:
                 continue
             
             batch_idx = tile_data.get('batch_idx', global_idx // num_tiles_per_image)
@@ -1099,10 +1108,14 @@ class UltimateSDUpscaleDistributed:
             # Blend tile synchronously
             x = tile_data.get('x', 0)
             y = tile_data.get('y', 0)
-            tile_tensor = tile_data['tensor']
-            tile_pil = tensor_to_pil(tile_tensor, 0)
+            # Prefer PIL image if present to avoid reconversion
+            if 'image' in tile_data:
+                tile_pil = tile_data['image']
+            else:
+                tile_tensor = tile_data['tensor']
+                tile_pil = tensor_to_pil(tile_tensor, 0)
             orig_x, orig_y = all_tiles[tile_idx]
-            tile_mask = self.create_tile_mask(width, height, orig_x, orig_y, tile_width, tile_height, mask_blur)
+            tile_mask = tile_masks[tile_idx]
             extracted_width = tile_data.get('extracted_width', tile_width + 2 * padding)
             extracted_height = tile_data.get('extracted_height', tile_height + 2 * padding)
             result_images[batch_idx] = self.blend_tile(result_images[batch_idx], tile_pil,
@@ -1546,7 +1559,7 @@ class UltimateSDUpscaleDistributed:
             if not job_data or JOB_PENDING_TASKS not in job_data:
                 return None
             try:
-                tile_idx = await asyncio.wait_for(job_data[JOB_PENDING_TASKS].get(), timeout=1.0)
+                tile_idx = await asyncio.wait_for(job_data[JOB_PENDING_TASKS].get(), timeout=0.1)
                 return tile_idx
             except asyncio.TimeoutError:
                 return None

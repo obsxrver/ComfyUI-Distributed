@@ -67,13 +67,14 @@ def _parse_tiles_from_form(data):
         except Exception as e:
             raise ValueError(f"Invalid image data for tile {i}: {e}")
 
-        # Convert to tensor [1, H, W, C]
+        # Convert to tensor [1, H, W, C] (keep PIL too for faster blending later)
         tile_tensor = pil_to_tensor(img)
 
         # Build tile dictionary
         try:
             tile_info = {
                 'tensor': tile_tensor,
+                'image': img,  # keep PIL to avoid reconversion later
                 'tile_idx': int(meta.get('tile_idx', i)),
                 'x': int(meta.get('x', 0)),
                 'y': int(meta.get('y', 0)),
@@ -136,7 +137,7 @@ async def init_dynamic_job(multi_job_id: str, batch_size: int, enabled_workers: 
         job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
         job_data['completed_images'] = {}
         job_data['pending_images'] = job_data[JOB_PENDING_TASKS]
-        debug_log(f"Dynamic job {multi_job_id} initialized with {batch_size} images")
+    debug_log(f"Job {multi_job_id} initialized with {batch_size} images")
 
 
 async def init_static_job_batched(multi_job_id: str, batch_size: int, num_tiles_per_image: int, enabled_workers: List[str]):
@@ -152,7 +153,7 @@ async def init_static_job_batched(multi_job_id: str, batch_size: int, num_tiles_
         enabled_workers=enabled_workers,
         batched_static=True,
     )
-    debug_log(f"Static job {multi_job_id} initialized with {num_tiles_per_image} tile ids for batch {batch_size}")
+    debug_log(f"Job {multi_job_id} initialized with {num_tiles_per_image} tile ids for batch {batch_size}")
 
 async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_image=None, all_indices=None, enabled_workers=None, task_assignments=None, batched_static: bool = False):
     """Unified initialization for job queues in static and dynamic modes."""
@@ -174,9 +175,9 @@ async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_ima
         if mode == 'dynamic':
             job_data[JOB_BATCH_SIZE] = batch_size
             pending_queue = job_data[JOB_PENDING_TASKS]
-            for i in all_indices or range(batch_size):
+            for i in (all_indices or range(batch_size)):
                 await pending_queue.put(i)
-            debug_log(f"Initialized dynamic queue with {batch_size} pending images")
+            debug_log(f"Initialized image queue with {batch_size} pending items")
         elif mode == 'static':
             job_data[JOB_NUM_TILES_PER_IMAGE] = num_tiles_per_image
             job_data[JOB_BATCH_SIZE] = batch_size
@@ -186,12 +187,12 @@ async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_ima
             if batched_static and num_tiles_per_image is not None:
                 for i in range(num_tiles_per_image):
                     await pending_queue.put(i)
-                debug_log(f"Initialized static queue (batched) with {num_tiles_per_image} tile ids for dynamic distribution across batch of {batch_size}")
+                debug_log(f"Initialized tile-id queue with {num_tiles_per_image} ids for batch {batch_size}")
             else:
                 total_tiles = batch_size * num_tiles_per_image
                 for i in range(total_tiles):
                     await pending_queue.put(i)
-                debug_log(f"Initialized static queue with {total_tiles} pending tiles for dynamic distribution")
+                debug_log(f"Initialized tile queue with {total_tiles} pending tasks")
             
             # Keep backward compatibility - if task assignments provided, still track them
             if task_assignments and enabled_workers:
@@ -412,7 +413,7 @@ async def submit_tiles_endpoint(request):
                 if multi_job_id in prompt_server.distributed_pending_tile_jobs:
                     job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
                     if JOB_MODE in job_data and job_data[JOB_MODE] != 'static':
-                        return await handle_api_error(request, "Mode mismatch: expected static mode", 400)
+                        return await handle_api_error(request, "Job not configured for tile submissions", 400)
                     if JOB_QUEUE in job_data:
                         await job_data[JOB_QUEUE].put({
                             'worker_id': worker_id,
@@ -432,7 +433,7 @@ async def submit_tiles_endpoint(request):
             if multi_job_id in prompt_server.distributed_pending_tile_jobs:
                 job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
                 if JOB_MODE in job_data and job_data[JOB_MODE] != 'static':
-                    return await handle_api_error(request, "Mode mismatch: expected static mode", 400)
+                    return await handle_api_error(request, "Job not configured for tile submissions", 400)
                 
                 q = job_data[JOB_QUEUE]
                 if batch_size > 0 or len(tiles) > 0:
@@ -485,7 +486,7 @@ async def submit_image_endpoint(request):
                 if multi_job_id in prompt_server.distributed_pending_tile_jobs:
                     job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
                     if JOB_MODE in job_data and job_data[JOB_MODE] != 'dynamic':
-                        return await handle_api_error(request, "Mode mismatch: expected dynamic mode", 400)
+                        return await handle_api_error(request, "Job not configured for image submissions", 400)
                     if JOB_QUEUE in job_data:
                         await job_data[JOB_QUEUE].put({
                             'worker_id': worker_id,
@@ -501,7 +502,7 @@ async def submit_image_endpoint(request):
                 if multi_job_id in prompt_server.distributed_pending_tile_jobs:
                     job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
                     if JOB_MODE in job_data and job_data[JOB_MODE] != 'dynamic':
-                        return await handle_api_error(request, "Mode mismatch: expected dynamic mode", 400)
+                        return await handle_api_error(request, "Job not configured for image submissions", 400)
                     if JOB_QUEUE in job_data:
                         await job_data[JOB_QUEUE].put({
                             'worker_id': worker_id,
@@ -599,7 +600,7 @@ async def request_image_endpoint(request):
                 elif mode == 'static' and JOB_PENDING_TASKS in job_data:
                     pending_queue = job_data[JOB_PENDING_TASKS]
                 else:
-                    return await handle_api_error(request, f"Invalid {mode} mode configuration", 400)
+                    return await handle_api_error(request, "Invalid job configuration", 400)
                 
                 try:
                     task_idx = await asyncio.wait_for(pending_queue.get(), timeout=0.1)
