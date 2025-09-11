@@ -83,12 +83,14 @@ class UltimateSDUpscaleDistributed:
     
     Threshold: dynamic_threshold input controls mode switch (default 8)
     """
-    
+
     def __init__(self):
         """Initialize the node and ensure persistent storage exists."""
         # Pre-initialize the persistent storage on node creation
         ensure_tile_jobs_initialized()
         debug_log("UltimateSDUpscaleDistributed - Node initialized")
+
+    # WAN/FLOW detection removed per user request; enforcing 4n+1 for any batch > 1.
     
     @classmethod
     def INPUT_TYPES(s):
@@ -139,6 +141,18 @@ class UltimateSDUpscaleDistributed:
             multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", 
             worker_id="", tile_indices="", dynamic_threshold=8):
         """Entry point - runs SYNCHRONOUSLY like Ultimate SD Upscaler."""
+        # Strict WAN/FLOW batching: error if batch is not 4n+1 (except allow 1)
+        try:
+            batch_size = int(getattr(upscaled_image, 'shape', [1])[0])
+        except Exception:
+            batch_size = 1
+        # Enforce 4n+1 batches globally for any model when batch > 1 (master only)
+        if not is_worker and batch_size != 1 and (batch_size % 4 != 1):
+            raise ValueError(
+                f"Batch size {batch_size} is not of the form 4n+1. "
+                "This node requires batch sizes of 1 or 4n+1 (1, 5, 9, 13, ...). "
+                "Please adjust the batch size."
+            )
         if not multi_job_id:
             # No distributed processing, run single GPU version
             return self.process_single_gpu(upscaled_image, model, positive, negative, vae,
