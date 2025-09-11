@@ -122,7 +122,6 @@ Accelerate Ultimate SD Upscaler by distributing tiles across multiple workers, w
 2. Upscale with ESRGAN or similar
 3. Connect to **Ultimate SD Upscale Distributed**
 4. Configure tile settings
-> If your GPUs are similar, set `static_distribution` to true; otherwise, false
 5. Enable workers for faster processing
 
 ---
@@ -176,6 +175,7 @@ If my custom nodes have added value to your workflow, consider fueling future de
 Your support helps keep this project thriving.
 
 Buy me a coffee at: https://buymeacoffee.com/robertvoy
+
 
 
 
