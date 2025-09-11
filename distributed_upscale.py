@@ -823,7 +823,6 @@ class UltimateSDUpscaleDistributed:
 
             # Always batched-per-tile in static mode
             debug_log(f"Worker[{worker_id[:8]}] - Assigned tile_id {tile_idx}")
-            processed_count += batch_size
             tile_id = tile_idx
             tx, ty = all_tiles[tile_id]
             # Extract tile for entire batch
@@ -837,8 +836,9 @@ class UltimateSDUpscaleDistributed:
                 seed, steps, cfg, sampler_name, scheduler, denoise, tiled_decode,
                 region, (width, height)
             )
-            # Queue results
-            for b in range(batch_size):
+            # Queue results (clamped to actual outputs)
+            out_bs = processed_batch.shape[0] if hasattr(processed_batch, 'shape') else batch_size
+            for b in range(min(batch_size, out_bs)):
                 processed_tiles.append({
                     'tile': processed_batch[b:b+1],
                     'tile_idx': tile_id,
@@ -850,6 +850,7 @@ class UltimateSDUpscaleDistributed:
                     'batch_idx': b,
                     'global_idx': b * num_tiles_per_image + tile_id
                 })
+            processed_count += min(batch_size, out_bs)
 
             # Send heartbeat
             try:
@@ -861,12 +862,12 @@ class UltimateSDUpscaleDistributed:
                 debug_log(f"Worker[{worker_id[:8]}] heartbeat failed: {e}")
 
             # Send tiles in batches
-                if len(processed_tiles) >= MAX_BATCH:
-                    run_async_in_server_loop(
-                        self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id),
-                        timeout=TILE_SEND_TIMEOUT
-                    )
-                    processed_tiles = []
+            if len(processed_tiles) >= MAX_BATCH:
+                run_async_in_server_loop(
+                    self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id),
+                    timeout=TILE_SEND_TIMEOUT
+                )
+                processed_tiles = []
         
         # Send any remaining tiles
         if processed_tiles:
@@ -953,6 +954,7 @@ class UltimateSDUpscaleDistributed:
         batch_size = upscaled_image.shape[0]
         _, height, width, _ = upscaled_image.shape
         total_tiles = batch_size * num_tiles_per_image
+        effective_bs = batch_size  # Adjusted if model returns fewer outputs per batch
         
         # Convert batch to PIL list for processing
         result_images = []
@@ -988,7 +990,6 @@ class UltimateSDUpscaleDistributed:
             )
             if tile_idx is not None:
                 consecutive_no_tile = 0
-                processed_count += batch_size
                 tile_id = tile_idx
                 tx, ty = all_tiles[tile_id]
                 tile_batch, x1, y1, ew, eh = self.extract_batch_tile_with_padding(
@@ -1001,7 +1002,9 @@ class UltimateSDUpscaleDistributed:
                     region, (width, height)
                 )
                 tile_mask = tile_masks[tile_id]
-                for b in range(batch_size):
+                out_bs = processed_batch.shape[0] if hasattr(processed_batch, 'shape') else batch_size
+                effective_bs = min(effective_bs, out_bs)
+                for b in range(min(batch_size, out_bs)):
                     tile_pil = tensor_to_pil(processed_batch, b)
                     if tile_pil.size != (ew, eh):
                         tile_pil = tile_pil.resize((ew, eh), Image.LANCZOS)
@@ -1011,6 +1014,7 @@ class UltimateSDUpscaleDistributed:
                         _mark_task_completed(multi_job_id, global_idx, {'batch_idx': b, 'tile_idx': tile_id}),
                         timeout=5.0
                     )
+                processed_count += min(batch_size, out_bs)
                 log(f"USDU Dist: Tiles progress {processed_count}/{total_tiles} (tile {tile_id})")
             else:
                 consecutive_no_tile += 1
@@ -1027,8 +1031,9 @@ class UltimateSDUpscaleDistributed:
             
             # Collect worker results using async operations
             try:
+                expected_total = num_tiles_per_image * max(1, effective_bs)
                 collected_tasks = run_async_in_server_loop(
-                    self._async_collect_and_monitor_static(multi_job_id, total_tiles, expected_total=total_tiles),
+                    self._async_collect_and_monitor_static(multi_job_id, total_tiles, expected_total=expected_total),
                     timeout=300.0  # 5 minutes to allow for retries and requeuing
                 )
             except comfy.model_management.InterruptProcessingException:
@@ -1190,13 +1195,18 @@ class UltimateSDUpscaleDistributed:
         if not processed_tiles:
             return  # Early exit if empty
 
-        total_tiles = len(processed_tiles)
-        debug_log(f"Worker[{worker_id[:8]}] - Preparing to send {total_tiles} tiles (size-aware chunks)")
-
         # Prepare encoded images and sizes to enable size-aware chunking
         encoded = []
         for idx, tile_data in enumerate(processed_tiles):
-            img = tensor_to_pil(tile_data['tile'], 0)
+            tile = tile_data.get('tile')
+            # Skip empty or invalid tiles
+            try:
+                if tile is None or (hasattr(tile, 'shape') and tile.shape[0] == 0):
+                    continue
+                img = tensor_to_pil(tile, 0)
+            except Exception:
+                # Any issue converting this tile -> skip it
+                continue
             bio = io.BytesIO()
             # Keep compression low to balance speed and size; adjust if needed
             img.save(bio, format='PNG', compress_level=0)
@@ -1213,6 +1223,11 @@ class UltimateSDUpscaleDistributed:
                     **({'global_idx': tile_data['global_idx']} if 'global_idx' in tile_data else {}),
                 }
             })
+        if not encoded:
+            debug_log(f"Worker[{worker_id[:8]}] - No valid tiles to send (all empty)")
+            return
+        total_tiles = len(encoded)
+        debug_log(f"Worker[{worker_id[:8]}] - Preparing to send {total_tiles} tiles (size-aware chunks)")
 
         # Size-aware chunking
         max_bytes = int(MAX_PAYLOAD_SIZE) - (1024 * 1024)  # 1MB headroom
@@ -1322,7 +1337,8 @@ class UltimateSDUpscaleDistributed:
 
             # Blend results back into each image using cached mask
             tile_mask = tile_masks[tile_idx]
-            for b in range(batch_size):
+            out_bs = processed_batch.shape[0] if hasattr(processed_batch, 'shape') else batch_size
+            for b in range(min(batch_size, out_bs)):
                 tile_pil = tensor_to_pil(processed_batch, b)
                 # Resize back to extracted size
                 if tile_pil.size != (ew, eh):
