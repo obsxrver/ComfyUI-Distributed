@@ -148,57 +148,67 @@ export async function renderSidebarContent(extension, el) {
         
         // Settings section
         const settingsSection = document.createElement("div");
-        settingsSection.style.cssText = "border-top: 1px solid #444; padding-top: 10px; margin-bottom: 10px;";
+        // Top separator only; spacing handled by the clickable toggle area for equal top/bottom spacing
+        settingsSection.style.cssText = "border-top: 1px solid #444; margin-bottom: 10px;";
         
-        // Settings header with toggle
+        // Settings header with toggle (full-area clickable between separators)
+        const settingsToggleArea = document.createElement("div");
+        // Equal spacing above header (to top separator) and below header (to bottom separator)
+        settingsToggleArea.style.cssText = "padding: 16.5px 0; cursor: pointer; user-select: none;";
+
         const settingsHeader = document.createElement("div");
-        settingsHeader.style.cssText = "display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none;";
-        
+        settingsHeader.style.cssText = "display: flex; align-items: center; justify-content: space-between;";
         const workerSettingsTitle = document.createElement("h4");
         workerSettingsTitle.textContent = "Settings";
         workerSettingsTitle.style.cssText = "margin: 0; font-size: 14px;";
-        
         const workerSettingsToggle = document.createElement("span");
         workerSettingsToggle.textContent = "▶"; // Right arrow when collapsed
         workerSettingsToggle.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease;";
-        
         settingsHeader.appendChild(workerSettingsTitle);
         settingsHeader.appendChild(workerSettingsToggle);
+        settingsToggleArea.appendChild(settingsHeader);
+        // Hover effect for toggle area
+        settingsToggleArea.onmouseover = () => { workerSettingsToggle.style.color = "#fff"; };
+        settingsToggleArea.onmouseout = () => { workerSettingsToggle.style.color = "#888"; };
         
-        // Hover effect for header
-        settingsHeader.onmouseover = () => {
-            workerSettingsToggle.style.color = "#fff";
-        };
-        settingsHeader.onmouseout = () => {
-            workerSettingsToggle.style.color = "#888";
-        };
-        
+        // A small separator shown only when collapsed (to make the section boundary obvious)
+        const settingsSeparator = document.createElement("div");
+        // No margin so the bottom spacing is controlled by settingsToggleArea padding-bottom
+        settingsSeparator.style.cssText = "border-bottom: 1px solid #444; margin: 0;";
+
         // Collapsible settings content
         const settingsContent = document.createElement("div");
         settingsContent.style.cssText = "max-height: 0; overflow: hidden; opacity: 0; transition: max-height 0.3s ease, opacity 0.3s ease;";
         
         const settingsDiv = document.createElement("div");
-        settingsDiv.style.cssText = "display: flex; flex-direction: column; gap: 8px; padding-top: 10px;";
+        settingsDiv.style.cssText = "display: grid; grid-template-columns: 1fr auto; row-gap: 10px; column-gap: 10px; padding-top: 10px; align-items: center;";
         
         // Toggle functionality
         let settingsExpanded = false;
-        settingsHeader.onclick = () => {
+        settingsToggleArea.onclick = () => {
             settingsExpanded = !settingsExpanded;
             if (settingsExpanded) {
                 settingsContent.style.maxHeight = "200px";
                 settingsContent.style.opacity = "1";
                 workerSettingsToggle.style.transform = "rotate(90deg)";
+                settingsSeparator.style.display = "none";
             } else {
                 settingsContent.style.maxHeight = "0";
                 settingsContent.style.opacity = "0";
                 workerSettingsToggle.style.transform = "rotate(0deg)";
+                settingsSeparator.style.display = "block";
             }
         };
         
         // Debug mode setting
+        // Section: General
+        const generalLabel = document.createElement("div");
+        generalLabel.textContent = "GENERAL";
+        generalLabel.style.cssText = "grid-column: 1 / span 2; font-size: 11px; color: #888; letter-spacing: 0.06em; padding-top: 2px;";
+
         const debugGroup = document.createElement("div");
-        debugGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-        
+        debugGroup.style.cssText = "grid-column: 1 / span 2; display: flex; align-items: center; gap: 8px;";
+
         const debugCheckbox = document.createElement("input");
         debugCheckbox.type = "checkbox";
         debugCheckbox.id = "setting-debug";
@@ -209,13 +219,14 @@ export async function renderSidebarContent(extension, el) {
         debugLabel.htmlFor = "setting-debug";
         debugLabel.textContent = "Debug Mode";
         debugLabel.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
+        debugLabel.title = "Enable verbose logging in the browser console.";
         
         debugGroup.appendChild(debugCheckbox);
         debugGroup.appendChild(debugLabel);
         
         // Auto-launch workers setting
         const autoLaunchGroup = document.createElement("div");
-        autoLaunchGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+        autoLaunchGroup.style.cssText = "grid-column: 1 / span 2; display: flex; align-items: center; gap: 8px;";
         
         const autoLaunchCheckbox = document.createElement("input");
         autoLaunchCheckbox.type = "checkbox";
@@ -227,13 +238,14 @@ export async function renderSidebarContent(extension, el) {
         autoLaunchLabel.htmlFor = "setting-auto-launch";
         autoLaunchLabel.textContent = "Auto-launch Local Workers on Startup";
         autoLaunchLabel.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
+        autoLaunchLabel.title = "Start local worker processes automatically when the master starts.";
         
         autoLaunchGroup.appendChild(autoLaunchCheckbox);
         autoLaunchGroup.appendChild(autoLaunchLabel);
         
-        // Stop workers on exit setting
+        // Stop workers on exit setting (under General)
         const stopOnExitGroup = document.createElement("div");
-        stopOnExitGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+        stopOnExitGroup.style.cssText = "grid-column: 1 / span 2; display: flex; align-items: center; gap: 8px;";
         
         const stopOnExitCheckbox = document.createElement("input");
         stopOnExitCheckbox.type = "checkbox";
@@ -245,28 +257,56 @@ export async function renderSidebarContent(extension, el) {
         stopOnExitLabel.htmlFor = "setting-stop-on-exit";
         stopOnExitLabel.textContent = "Stop Local Workers on Master Exit";
         stopOnExitLabel.style.cssText = "font-size: 12px; color: #ccc; cursor: pointer;";
+        stopOnExitLabel.title = "Stop local worker processes automatically when the master exits.";
         
         stopOnExitGroup.appendChild(stopOnExitCheckbox);
         stopOnExitGroup.appendChild(stopOnExitLabel);
         
+        settingsDiv.appendChild(generalLabel);
         settingsDiv.appendChild(debugGroup);
         settingsDiv.appendChild(autoLaunchGroup);
         settingsDiv.appendChild(stopOnExitGroup);
+
+        // Worker Timeout setting (seconds)
+        // Section: Timeouts
+        const timeoutsLabel = document.createElement("div");
+        timeoutsLabel.textContent = "TIMEOUTS";
+        timeoutsLabel.style.cssText = "grid-column: 1 / span 2; font-size: 11px; color: #888; letter-spacing: 0.06em; padding-top: 4px;";
+
+        const timeoutGroup = document.createElement("div");
+        timeoutGroup.style.cssText = "grid-column: 1 / span 2; display: flex; align-items: center; gap: 6px;";
+
+        const timeoutLabel = document.createElement("label");
+        timeoutLabel.htmlFor = "setting-worker-timeout";
+        timeoutLabel.textContent = "Worker Timeout";
+        timeoutLabel.style.cssText = "font-size: 12px; color: #ccc; cursor: default;";
+        timeoutLabel.title = "Seconds without a heartbeat before a worker is considered timed out and its tasks are requeued. Default 60. For WAN, consider 300–600.";
+
+        const timeoutInput = document.createElement("input");
+        timeoutInput.type = "number";
+        timeoutInput.id = "setting-worker-timeout";
+        timeoutInput.min = "10";
+        timeoutInput.step = "1";
+        timeoutInput.style.cssText = "width: 80px; padding: 2px 6px; background: #222; color: #ddd; border: 1px solid #333; border-radius: 3px;";
+        timeoutInput.value = (extension.config?.settings?.worker_timeout_seconds ?? 60);
+        timeoutInput.onchange = (e) => {
+            const v = parseInt(e.target.value, 10);
+            if (!Number.isFinite(v) || v <= 0) return;
+            extension._updateSetting('worker_timeout_seconds', v);
+        };
+
+        timeoutGroup.appendChild(timeoutLabel);
+        timeoutGroup.appendChild(timeoutInput);
+        settingsDiv.appendChild(timeoutsLabel);
+        settingsDiv.appendChild(timeoutGroup);
         settingsContent.appendChild(settingsDiv);
         
-        settingsSection.appendChild(settingsHeader);
+        settingsSection.appendChild(settingsToggleArea);
+        settingsSection.appendChild(settingsSeparator);
         settingsSection.appendChild(settingsContent);
         container.appendChild(settingsSection);
 
-        const summarySection = document.createElement("div");
-        summarySection.style.cssText = "border-top: 1px solid #444; padding-top: 10px;";
-        const summary = document.createElement("div");
-        summary.id = "distributed-summary";
-        summary.style.cssText = "font-size: 11px; color: #888;";
-        summarySection.appendChild(summary);
-        container.appendChild(summarySection);
         el.appendChild(container);
-        extension.updateSummary();
         
         // Start checking worker statuses immediately in parallel
         setTimeout(() => extension.checkAllWorkerStatuses(), 0);

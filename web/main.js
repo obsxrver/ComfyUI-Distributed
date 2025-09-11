@@ -217,22 +217,7 @@ class DistributedExtension {
         this.panelElement = null;
     }
 
-    updateSummary() {
-        const summaryEl = document.getElementById('distributed-summary');
-        if (summaryEl) {
-            // Count active workers from state
-            const activeWorkers = this.config.workers.filter(w => {
-                const status = this.state.getWorkerStatus(w.id);
-                return status.online;
-            }).length;
-            const totalGPUs = activeWorkers + 1;
-            if (this.isEnabled) {
-                summaryEl.textContent = `If Collector node is present, total generation = (${totalGPUs} GPUs × Batch Size)`;
-            } else {
-                summaryEl.textContent = "Only the master GPU will be used.";
-            }
-        }
-    }
+    // updateSummary removed
 
     // --- Core Logic & Execution ---
 

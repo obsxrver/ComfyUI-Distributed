@@ -18,6 +18,7 @@ MAX_PAYLOAD_SIZE = int(os.environ.get('COMFYUI_MAX_PAYLOAD_SIZE', str(50 * 1024 
 
 # Import HEARTBEAT_TIMEOUT from constants
 from .constants import HEARTBEAT_TIMEOUT
+from .config import load_config
 
 
 def _parse_tiles_from_form(data):
@@ -271,13 +272,35 @@ async def _check_and_requeue_timed_out_workers(multi_job_id, total_tasks):
         requeued_count = 0
         completed_tasks = job_data.get(JOB_COMPLETED_TASKS, {})
 
+        # Allow override via config setting 'worker_timeout_seconds'
+        cfg = load_config()
+        hb_timeout = int(cfg.get('settings', {}).get('worker_timeout_seconds', HEARTBEAT_TIMEOUT))
+
         for worker, last_heartbeat in list(job_data.get(JOB_WORKER_STATUS, {}).items()):
-            if current_time - last_heartbeat > HEARTBEAT_TIMEOUT:
+            if current_time - last_heartbeat > hb_timeout:
                 log(f"Worker {worker} timed out")
                 for task_id in job_data.get(JOB_ASSIGNED_TO_WORKERS, {}).get(worker, []):
-                    if task_id not in completed_tasks:
-                        await job_data[JOB_PENDING_TASKS].put(task_id)
-                        requeued_count += 1
+                    # If batched_static, task_id is a tile_idx; consider it complete only if
+                    # all corresponding global_idx entries are present in completed_tasks.
+                    batched_static = bool(job_data.get('batched_static', False))
+                    if batched_static:
+                        num_tiles_per_image = job_data.get(JOB_NUM_TILES_PER_IMAGE, 1)
+                        batch_size = job_data.get(JOB_BATCH_SIZE, 1)
+                        # Check all global indices for this tile across the batch
+                        all_done = True
+                        for b in range(batch_size):
+                            gidx = b * num_tiles_per_image + task_id
+                            if gidx not in completed_tasks:
+                                all_done = False
+                                break
+                        if not all_done:
+                            await job_data[JOB_PENDING_TASKS].put(task_id)
+                            requeued_count += 1
+                    else:
+                        # Legacy/global-idx mode: task_id is a global index key
+                        if task_id not in completed_tasks:
+                            await job_data[JOB_PENDING_TASKS].put(task_id)
+                            requeued_count += 1
                 if JOB_WORKER_STATUS in job_data:
                     del job_data[JOB_WORKER_STATUS][worker]
                 if JOB_ASSIGNED_TO_WORKERS in job_data:
