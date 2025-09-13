@@ -125,9 +125,9 @@ Accelerate Ultimate SD Upscaler by distributing tiles across multiple workers, w
 5. Enable workers for faster processing
 
 ### Distributed Video Upscaling
-Accelerate Ultimate SD Upscaler by distributing tiles across multiple workers, with speed scaling as you add more GPUs.
+Accelerate Ultimate SD Upscaler by distributing video tiles across multiple workers, with speed scaling as you add more GPUs.
 
-<img width="1966" height="1175" alt="image" src="https://github.com/user-attachments/assets/07dc7d5a-a615-4ccc-a2eb-1e85e854401b" />
+![Video Upscaler workflow](https://github.com/user-attachments/assets/07dc7d5a-a615-4ccc-a2eb-1e85e854401b)
 
 > [Download workflow](/workflows/distributed-upscale-video.json)
 
@@ -189,6 +189,7 @@ If my custom nodes have added value to your workflow, consider fueling future de
 Your support helps keep this project thriving.
 
 Buy me a coffee at: https://buymeacoffee.com/robertvoy
+
 
 
 
