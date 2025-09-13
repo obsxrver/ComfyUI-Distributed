@@ -38,4 +38,4 @@ MEMORY_CLEAR_DELAY = 0.5
 MAX_BATCH = int(os.environ.get('COMFYUI_MAX_BATCH', '20'))  # Maximum items per batch to prevent timeouts/OOM (~100MB chunks for 512x512 PNGs)
 
 # Heartbeat monitoring
-HEARTBEAT_TIMEOUT = int(os.environ.get('COMFYUI_HEARTBEAT_TIMEOUT', '90'))  # Worker heartbeat timeout in seconds (default 90s)
+HEARTBEAT_TIMEOUT = int(os.environ.get('COMFYUI_HEARTBEAT_TIMEOUT', '60'))  # Worker heartbeat timeout in seconds (default 60s)

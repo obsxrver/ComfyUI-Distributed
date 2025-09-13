@@ -876,14 +876,14 @@ class UltimateSDUpscaleDistributed:
             except Exception as e:
                 debug_log(f"Worker[{worker_id[:8]}] heartbeat failed: {e}")
 
-            # Send tiles in batches
-                if len(processed_tiles) >= MAX_BATCH:
-                    run_async_in_server_loop(
-                        self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id),
-                        timeout=TILE_SEND_TIMEOUT
-                    )
-                    processed_tiles = []
-        
+            # Send tiles in batches within loop
+            if len(processed_tiles) >= MAX_BATCH:
+                run_async_in_server_loop(
+                    self.send_tiles_batch_to_master(processed_tiles, multi_job_id, master_url, padding, worker_id),
+                    timeout=TILE_SEND_TIMEOUT
+                )
+                processed_tiles = []
+
         # Send any remaining tiles
         if processed_tiles:
             run_async_in_server_loop(
@@ -900,8 +900,6 @@ class UltimateSDUpscaleDistributed:
         last_progress_log = time.time()
         progress_interval = 5.0
         last_heartbeat_check = time.time()
-        stall_count = 0
-        max_stall_count = 120  # Allow 120 iterations with no progress before returning
         last_completed_count = 0
         
         while True:
@@ -919,7 +917,6 @@ class UltimateSDUpscaleDistributed:
                 requeued_count = await self._check_and_requeue_timed_out_workers(multi_job_id, expected_total)
                 if requeued_count > 0:
                     log(f"Requeued {requeued_count} tasks from timed-out workers")
-                    stall_count = 0  # Reset stall count when we requeue
                 last_heartbeat_check = current_time
             
             # Get current completion count
@@ -935,24 +932,16 @@ class UltimateSDUpscaleDistributed:
                 debug_log(f"All {expected_total} tasks completed")
                 break
             
-            # Check if we're making progress
-            if completed_count > last_completed_count:
-                stall_count = 0  # Reset stall count on progress
-                last_completed_count = completed_count
-            else:
-                stall_count += 1
-            
-            # If no progress for too long, check if we need to process locally
-            if stall_count >= max_stall_count:
-                prompt_server = ensure_tile_jobs_initialized()
-                async with prompt_server.distributed_tile_jobs_lock:
-                    job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
-                    if job_data:
-                        pending_queue = job_data.get(JOB_PENDING_TASKS)
-                        # If there are pending tasks but no active workers, or we're stalled
-                        if pending_queue and not pending_queue.empty():
-                            log(f"Collection stalled with {expected_total - completed_count} tasks remaining. Returning for local processing.")
-                            break
+            # If no active workers remain and there are pending tasks, return for local processing
+            prompt_server = ensure_tile_jobs_initialized()
+            async with prompt_server.distributed_tile_jobs_lock:
+                job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+                if job_data:
+                    pending_queue = job_data.get(JOB_PENDING_TASKS)
+                    active_workers = list(job_data.get(JOB_WORKER_STATUS, {}).keys())
+                    if pending_queue and not pending_queue.empty() and len(active_workers) == 0:
+                        log(f"No active workers remaining with {expected_total - completed_count} tasks pending. Returning for local processing.")
+                        break
             
             # Wait a bit before next check
             await asyncio.sleep(0.1)
@@ -1043,9 +1032,10 @@ class UltimateSDUpscaleDistributed:
             
             # Collect worker results using async operations
             try:
+                # Wait until either all tasks are collected or there are no active workers left
                 collected_tasks = run_async_in_server_loop(
                     self._async_collect_and_monitor_static(multi_job_id, total_tiles, expected_total=total_tiles),
-                    timeout=300.0  # 5 minutes to allow for retries and requeuing
+                    timeout=None
                 )
             except comfy.model_management.InterruptProcessingException:
                 # Clean up job on interruption
@@ -1715,51 +1705,51 @@ class UltimateSDUpscaleDistributed:
             negative_sliced = clone_conditioning(negative)
             for cond_list in [positive_sliced, negative_sliced]:
                 for i in range(len(cond_list)):
-                    emb, cond_dict = cond_list[i]
-                    if emb.shape[0] > 1:
-                        cond_list[i][0] = emb[image_idx:image_idx+1]
-                    if 'control' in cond_dict:
-                        control = cond_dict['control']
-                        while control is not None:
-                            hint = control.cond_hint_original
-                            if hint.shape[0] > 1:
-                                control.cond_hint_original = hint[image_idx:image_idx+1]
-                            control = control.previous_controlnet
-                    if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
-                        cond_dict['mask'] = cond_dict['mask'][image_idx:image_idx+1]
+                        emb, cond_dict = cond_list[i]
+                        if emb.shape[0] > 1:
+                            cond_list[i][0] = emb[image_idx:image_idx+1]
+                        if 'control' in cond_dict:
+                            control = cond_dict['control']
+                            while control is not None:
+                                hint = control.cond_hint_original
+                                if hint.shape[0] > 1:
+                                    control.cond_hint_original = hint[image_idx:image_idx+1]
+                                control = control.previous_controlnet
+                        if 'mask' in cond_dict and cond_dict['mask'].shape[0] > 1:
+                            cond_dict['mask'] = cond_dict['mask'][image_idx:image_idx+1]
 
-            for tile_idx, pos in enumerate(all_tiles):
-                local_image = self._process_and_blend_tile(
-                    tile_idx, pos, single_tensor, local_image,
-                    model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
-                    sampler_name, scheduler, denoise, tile_width, tile_height,
-                    padding, mask_blur, width, height, force_uniform_tiles,
-                    tiled_decode, batch_idx=image_idx
-                )
-                run_async_in_server_loop(
-                    _send_heartbeat_to_master(multi_job_id, master_url, worker_id),
-                    timeout=5.0
-                )
+                for tile_idx, pos in enumerate(all_tiles):
+                    local_image = self._process_and_blend_tile(
+                        tile_idx, pos, single_tensor, local_image,
+                        model, positive_sliced, negative_sliced, vae, image_seed, steps, cfg,
+                        sampler_name, scheduler, denoise, tile_width, tile_height,
+                        padding, mask_blur, width, height, force_uniform_tiles,
+                        tiled_decode, batch_idx=image_idx
+                    )
+                    run_async_in_server_loop(
+                        _send_heartbeat_to_master(multi_job_id, master_url, worker_id),
+                        timeout=5.0
+                    )
 
-            # Send processed image back to master
-            try:
-                # Use the estimated remaining to determine if this is the last image
-                is_last = is_last_for_worker
-                run_async_in_server_loop(
-                    self._send_full_image_to_master(local_image, image_idx, multi_job_id,
-                                                    master_url, worker_id, is_last),
-                    timeout=TILE_SEND_TIMEOUT
-                )
-                # Send heartbeat after processing
-                run_async_in_server_loop(
-                    _send_heartbeat_to_master(multi_job_id, master_url, worker_id),
-                    timeout=5.0
-                )
-                if is_last:
-                    break
-            except Exception as e:
-                log(f"USDU Dist Worker[{worker_id[:8]}] - Error sending image {image_idx}: {e}")
-                # Continue processing other images
+                # Send processed image back to master
+                try:
+                    # Use the estimated remaining to determine if this is the last image
+                    is_last = is_last_for_worker
+                    run_async_in_server_loop(
+                        self._send_full_image_to_master(local_image, image_idx, multi_job_id,
+                                                        master_url, worker_id, is_last),
+                        timeout=TILE_SEND_TIMEOUT
+                    )
+                    # Send heartbeat after processing
+                    run_async_in_server_loop(
+                        _send_heartbeat_to_master(multi_job_id, master_url, worker_id),
+                        timeout=5.0
+                    )
+                    if is_last:
+                        break
+                except Exception as e:
+                    log(f"USDU Dist Worker[{worker_id[:8]}] - Error sending image {image_idx}: {e}")
+                    # Continue processing other images
 
         # Send final is_last signal
         debug_log(f"Worker[{worker_id[:8]}] processed {processed_count} images, sending completion signal")

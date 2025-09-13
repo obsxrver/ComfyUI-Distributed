@@ -4,7 +4,7 @@ import json
 import copy
 import os
 import io
-from aiohttp import web
+from aiohttp import web, ClientTimeout
 import server
 from PIL import Image
 
@@ -277,7 +277,64 @@ async def _check_and_requeue_timed_out_workers(multi_job_id, total_tasks):
         hb_timeout = int(cfg.get('settings', {}).get('worker_timeout_seconds', HEARTBEAT_TIMEOUT))
 
         for worker, last_heartbeat in list(job_data.get(JOB_WORKER_STATUS, {}).items()):
-            if current_time - last_heartbeat > hb_timeout:
+            age = current_time - last_heartbeat
+            debug_log(f"Timeout check: worker={worker} age={age:.1f}s threshold={hb_timeout}s")
+            if age > hb_timeout:
+                # Busy-only grace policy: require positive signal from worker (/prompt)
+                # We also log assignment state for diagnostics but do not grace on it alone.
+                assigned = job_data.get(JOB_ASSIGNED_TO_WORKERS, {}).get(worker, [])
+                incomplete_assigned = 0
+                try:
+                    if assigned:
+                        batched_static = bool(job_data.get('batched_static', False))
+                        if batched_static:
+                            num_tiles_per_image = job_data.get(JOB_NUM_TILES_PER_IMAGE, 1)
+                            batch_size = job_data.get(JOB_BATCH_SIZE, 1)
+                            for task_id in assigned:
+                                for b in range(batch_size):
+                                    gidx = b * num_tiles_per_image + task_id
+                                    if gidx not in completed_tasks:
+                                        incomplete_assigned += 1
+                                        break
+                        else:
+                            for task_id in assigned:
+                                if task_id not in completed_tasks:
+                                    incomplete_assigned += 1
+                    debug_log(f"Assigned diagnostics: total_assigned={len(assigned)} incomplete_assigned={incomplete_assigned}")
+                except Exception as e:
+                    debug_log(f"Assigned diagnostics failed for worker {worker}: {e}")
+
+                busy = False
+                probe_status = None
+                probe_queue = None
+                try:
+                    cfg_workers = load_config().get('workers', [])
+                    wrec = next((w for w in cfg_workers if str(w.get('id')) == str(worker)), None)
+                    if wrec:
+                        host = wrec.get('host') or 'localhost'
+                        port = int(wrec.get('port', 8188))
+                        url = f"http://{host}:{port}/prompt"
+                        debug_log(f"Probing worker {worker} at {url}")
+                        session = await get_client_session()
+                        async with session.get(url, timeout=ClientTimeout(total=2.0)) as resp:
+                            probe_status = resp.status
+                            if resp.status == 200:
+                                try:
+                                    payload = await resp.json()
+                                    probe_queue = int(payload.get('exec_info', {}).get('queue_remaining', 0))
+                                except Exception:
+                                    probe_queue = 0
+                                busy = probe_queue is not None and probe_queue > 0
+                except Exception as e:
+                    debug_log(f"Probe failed for worker {worker}: {e}")
+                finally:
+                    debug_log(f"Probe diagnostics: http_status={probe_status} queue_remaining={probe_queue}")
+
+                if busy:
+                    job_data[JOB_WORKER_STATUS][worker] = current_time
+                    debug_log(f"Heartbeat grace: worker {worker} busy via probe; skipping requeue")
+                    continue
+
                 log(f"Worker {worker} timed out")
                 for task_id in job_data.get(JOB_ASSIGNED_TO_WORKERS, {}).get(worker, []):
                     # If batched_static, task_id is a tile_idx; consider it complete only if

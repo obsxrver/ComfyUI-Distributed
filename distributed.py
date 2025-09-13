@@ -1992,6 +1992,47 @@ class DistributedCollectorNode:
                         comfy.model_management.throw_exception_if_processing_interrupted()
                         missing_workers = set(str(w) for w in enabled_workers) - workers_done
                         log(f"Master - Timeout. Still waiting for workers: {list(missing_workers)}")
+
+                        # Probe missing workers' /prompt endpoints to check if they are actively processing
+                        any_busy = False
+                        try:
+                            cfg = load_config()
+                            cfg_workers = cfg.get('workers', [])
+                            session = await get_client_session()
+                            for wid in list(missing_workers):
+                                wrec = next((w for w in cfg_workers if str(w.get('id')) == str(wid)), None)
+                                if not wrec:
+                                    debug_log(f"Collector probe: worker {wid} not found in config")
+                                    continue
+                                host = wrec.get('host') or 'localhost'
+                                port = int(wrec.get('port', 8188))
+                                url = f"http://{host}:{port}/prompt"
+                                try:
+                                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=2.0)) as resp:
+                                        status = resp.status
+                                        q = None
+                                        if status == 200:
+                                            try:
+                                                payload = await resp.json()
+                                                q = int(payload.get('exec_info', {}).get('queue_remaining', 0))
+                                            except Exception:
+                                                q = 0
+                                        debug_log(f"Collector probe: worker {wid} status={status} queue_remaining={q}")
+                                        if status == 200 and q and q > 0:
+                                            any_busy = True
+                                            log(f"Master - Probe grace: worker {wid} appears busy (queue_remaining={q}). Continuing to wait.")
+                                            break
+                                except Exception as e:
+                                    debug_log(f"Collector probe failed for worker {wid}: {e}")
+                        except Exception as e:
+                            debug_log(f"Collector probe setup error: {e}")
+
+                        if any_busy:
+                            # Refresh last_activity and continue waiting
+                            last_activity = time.time()
+                            # Refresh base timeout in case the user changed it in UI
+                            base_timeout = float(get_worker_timeout_seconds())
+                            continue
                         
                         # Check queue size again with lock
                         async with prompt_server.distributed_jobs_lock:
