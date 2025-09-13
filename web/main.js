@@ -154,11 +154,22 @@ class DistributedExtension {
         
         try {
             await this.api.updateSetting(key, value);
-            
+
+            const prettyKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+            let detail;
+            if (key === 'worker_timeout_seconds') {
+                const secs = parseInt(value, 10);
+                detail = `Worker Timeout set to ${Number.isFinite(secs) ? secs : value}s`;
+            } else if (typeof value === 'boolean') {
+                detail = `${prettyKey} ${value ? 'enabled' : 'disabled'}`;
+            } else {
+                detail = `${prettyKey} set to ${value}`;
+            }
+
             app.extensionManager.toast.add({
                 severity: "success",
                 summary: "Setting Updated",
-                detail: `${key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())} ${value ? 'enabled' : 'disabled'}`,
+                detail,
                 life: 2000
             });
         } catch (error) {

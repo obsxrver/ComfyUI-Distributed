@@ -5,6 +5,9 @@ import os
 import json
 from .logging import log
 
+# Import defaults for timeout fallbacks
+from .constants import HEARTBEAT_TIMEOUT
+
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "gpu_config.json")
 
 def get_default_config():
@@ -48,3 +51,21 @@ def ensure_config_exists():
             debug_log("Created default config file")
         else:
             log("Could not create default config file")
+
+def get_worker_timeout_seconds(default: int = HEARTBEAT_TIMEOUT) -> int:
+    """Return the unified worker timeout (seconds).
+
+    Priority:
+    1) UI-configured setting `settings.worker_timeout_seconds`
+    2) Fallback to provided `default` (defaults to HEARTBEAT_TIMEOUT which itself
+       can be overridden via the COMFYUI_HEARTBEAT_TIMEOUT env var)
+
+    This value should be used anywhere we consider a worker "timed out" from the
+    master's perspective (e.g., collector waits, upscaler result collection).
+    """
+    try:
+        cfg = load_config()
+        val = int(cfg.get('settings', {}).get('worker_timeout_seconds', default))
+        return max(1, val)
+    except Exception:
+        return max(1, int(default))

@@ -19,6 +19,7 @@ from .utils.logging import debug_log, log
 from .utils.image import tensor_to_pil, pil_to_tensor
 from .utils.network import get_client_session
 from .utils.async_helpers import run_async_in_server_loop
+from .utils.config import get_worker_timeout_seconds
 from .utils.constants import (
     TILE_COLLECTION_TIMEOUT, TILE_WAIT_TIMEOUT,
     TILE_SEND_TIMEOUT, MAX_BATCH
@@ -46,7 +47,7 @@ from .utils.usdu_managment import init_dynamic_job, init_static_job_batched
 # Note: MAX_BATCH and HEARTBEAT_TIMEOUT are imported from utils.constants
 # They can be overridden via environment variables:
 # - COMFYUI_MAX_BATCH (default: 20)
-# - COMFYUI_HEARTBEAT_TIMEOUT (default: 120)
+# - COMFYUI_HEARTBEAT_TIMEOUT (default: 90)
 
 # Sync wrapper decorator for async methods
 def sync_wrapper(async_func):
@@ -329,7 +330,8 @@ class UltimateSDUpscaleDistributed:
         
         collected_results = {}
         workers_done = set()
-        timeout = 120.0 if mode == 'dynamic' else 60.0  # Longer timeout for full images
+        # Unify collector/upscaler wait behavior with the UI worker timeout
+        timeout = float(get_worker_timeout_seconds())
         last_heartbeat_check = time.time()
         collected_count = 0
         
@@ -344,8 +346,8 @@ class UltimateSDUpscaleDistributed:
                 break
                 
             try:
-                # Shorter timeout for regular checks in dynamic mode
-                wait_timeout = 10.0 if mode == 'dynamic' else timeout
+                # Shorter poll for dynamic mode, but never exceed the configured timeout
+                wait_timeout = (min(10.0, timeout) if mode == 'dynamic' else timeout)
                 result = await asyncio.wait_for(q.get(), timeout=wait_timeout)
                 worker_id = result['worker_id']
                 is_last = result.get('is_last', False)
@@ -1523,9 +1525,11 @@ class UltimateSDUpscaleDistributed:
         
         if remaining_to_collect > 0:
             debug_log(f"Waiting for {remaining_to_collect} more images from workers")
+            # Use the unified worker timeout for the collection phase
+            collection_timeout = float(get_worker_timeout_seconds())
             collected_images = run_async_in_server_loop(
                 self._async_collect_dynamic_images(multi_job_id, remaining_to_collect, num_workers, batch_size, processed_count),
-                timeout=TILE_COLLECTION_TIMEOUT * 2
+                timeout=collection_timeout
             )
             
             # Merge collected with already completed

@@ -280,7 +280,7 @@ export async function renderSidebarContent(extension, el) {
         timeoutLabel.htmlFor = "setting-worker-timeout";
         timeoutLabel.textContent = "Worker Timeout";
         timeoutLabel.style.cssText = "font-size: 12px; color: #ccc; cursor: default;";
-        timeoutLabel.title = "Seconds without a heartbeat before a worker is considered timed out and its tasks are requeued. Default 60. For WAN, consider 300–600.";
+        timeoutLabel.title = "Seconds without a heartbeat before a worker is considered timed out and its tasks are requeued. Default 90. For WAN, consider 300–600.";
 
         const timeoutInput = document.createElement("input");
         timeoutInput.type = "number";
@@ -288,7 +288,7 @@ export async function renderSidebarContent(extension, el) {
         timeoutInput.min = "10";
         timeoutInput.step = "1";
         timeoutInput.style.cssText = "width: 80px; padding: 2px 6px; background: #222; color: #ddd; border: 1px solid #333; border-radius: 3px;";
-        timeoutInput.value = (extension.config?.settings?.worker_timeout_seconds ?? 60);
+        timeoutInput.value = (extension.config?.settings?.worker_timeout_seconds ?? 90);
         timeoutInput.onchange = (e) => {
             const v = parseInt(e.target.value, 10);
             if (!Number.isFinite(v) || v <= 0) return;

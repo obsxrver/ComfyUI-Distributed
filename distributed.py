@@ -9,6 +9,7 @@ import aiohttp
 from aiohttp import web
 import io
 import server
+import comfy.model_management
 import subprocess
 import platform
 import time
@@ -22,7 +23,7 @@ from comfy.utils import ProgressBar
 
 # Import shared utilities
 from .utils.logging import debug_log, log
-from .utils.config import CONFIG_FILE, get_default_config, load_config, save_config, ensure_config_exists
+from .utils.config import CONFIG_FILE, get_default_config, load_config, save_config, ensure_config_exists, get_worker_timeout_seconds
 from .utils.image import tensor_to_pil, pil_to_tensor, ensure_contiguous
 from .utils.process import is_process_alive, terminate_process, get_python_executable
 from .utils.network import handle_api_error, get_server_port, get_server_loop, get_client_session, cleanup_client_session
@@ -1912,8 +1913,10 @@ class DistributedCollectorNode:
             collected_count = 0
             workers_done = set()
             
-            # Use a reasonable timeout for the first image
-            timeout = WORKER_JOB_TIMEOUT
+            # Use unified worker timeout from config/UI with simple sliced waits
+            base_timeout = float(get_worker_timeout_seconds())
+            slice_timeout = min(0.5, base_timeout)  # small per-wait slice to recheck interrupt
+            last_activity = time.time()
             
             
             # Get queue size before starting
@@ -1924,116 +1927,127 @@ class DistributedCollectorNode:
             # NEW: Initialize progress bar for workers (total = num_workers)
             p = ProgressBar(num_workers)
 
-            while len(workers_done) < num_workers:
-                try:
-                    # Get the queue again each time to ensure we have the right reference
-                    async with prompt_server.distributed_jobs_lock:
-                        q = prompt_server.distributed_pending_jobs[multi_job_id]
-                        current_size = q.qsize()
-                    
-                    
-                    result = await asyncio.wait_for(q.get(), timeout=timeout)
-                    worker_id = result['worker_id']
-                    is_last = result.get('is_last', False)
-                    
-                    # Check if batch mode
-                    tensors = result.get('tensors', [])
-                    indices = result.get('indices', [])  # Get the indices
-                    if tensors:
-                        # Batch mode
-                        debug_log(f"Master - Got batch from worker {worker_id}, size={len(tensors)}, is_last={is_last}")
+            try:
+                while len(workers_done) < num_workers:
+                    # Check for user interruption to abort collection promptly
+                    comfy.model_management.throw_exception_if_processing_interrupted()
+                    try:
+                        # Get the queue again each time to ensure we have the right reference
+                        async with prompt_server.distributed_jobs_lock:
+                            q = prompt_server.distributed_pending_jobs[multi_job_id]
+                            current_size = q.qsize()
                         
-                        if worker_id not in worker_images:
-                            worker_images[worker_id] = {}
+                        result = await asyncio.wait_for(q.get(), timeout=slice_timeout)
+                        worker_id = result['worker_id']
+                        is_last = result.get('is_last', False)
                         
-                        # Use actual indices if available, otherwise fall back to sequential
-                        if indices:
-                            for i, tensor in enumerate(tensors):
-                                actual_idx = indices[i]
-                                worker_images[worker_id][actual_idx] = tensor
+                        # Check if batch mode
+                        tensors = result.get('tensors', [])
+                        indices = result.get('indices', [])  # Get the indices
+                        if tensors:
+                            # Batch mode
+                            debug_log(f"Master - Got batch from worker {worker_id}, size={len(tensors)}, is_last={is_last}")
+                            
+                            if worker_id not in worker_images:
+                                worker_images[worker_id] = {}
+                            
+                            # Use actual indices if available, otherwise fall back to sequential
+                            if indices:
+                                for i, tensor in enumerate(tensors):
+                                    actual_idx = indices[i]
+                                    worker_images[worker_id][actual_idx] = tensor
+                            else:
+                                # Fallback for backward compatibility
+                                for idx, tensor in enumerate(tensors):
+                                    worker_images[worker_id][idx] = tensor
+                            
+                            collected_count += len(tensors)
                         else:
-                            # Fallback for backward compatibility
-                            for idx, tensor in enumerate(tensors):
-                                worker_images[worker_id][idx] = tensor
+                            # Single image mode (backward compat)
+                            image_index = result['image_index']
+                            tensor = result['tensor']
                             
-                        
-                        collected_count += len(tensors)
-                    else:
-                        # Single image mode (backward compat)
-                        image_index = result['image_index']
-                        tensor = result['tensor']
-                        
-                        debug_log(f"Master - Got single result from worker {worker_id}, image {image_index}, is_last={is_last}")
-                        
-                        if worker_id not in worker_images:
-                            worker_images[worker_id] = {}
-                        worker_images[worker_id][image_index] = tensor
-                        
-                        
-                        collected_count += 1
-                    
-                    # Once we start receiving images, use shorter timeout
-                    timeout = WORKER_JOB_TIMEOUT
-                    
-                    if is_last:
-                        workers_done.add(worker_id)
-                        p.update(1)  # +1 per completed worker
-                    else:
-                        pass  # Continue waiting for more results
-                    
-                except asyncio.TimeoutError:
-                    missing_workers = set(str(w) for w in enabled_workers) - workers_done
-                    log(f"Master - Timeout. Still waiting for workers: {list(missing_workers)}")
-                    
-                    # Check queue size again with lock
-                    async with prompt_server.distributed_jobs_lock:
-                        if multi_job_id in prompt_server.distributed_pending_jobs:
-                            final_q = prompt_server.distributed_pending_jobs[multi_job_id]
-                            final_size = final_q.qsize()
+                            debug_log(f"Master - Got single result from worker {worker_id}, image {image_index}, is_last={is_last}")
                             
-                            # Try to drain any remaining items
-                            remaining_items = []
-                            while not final_q.empty():
-                                try:
-                                    item = final_q.get_nowait()
-                                    remaining_items.append(item)
-                                except asyncio.QueueEmpty:
-                                    break
+                            if worker_id not in worker_images:
+                                worker_images[worker_id] = {}
+                            worker_images[worker_id][image_index] = tensor
                             
-                            if remaining_items:
-                                # Process them
-                                for item in remaining_items:
-                                    worker_id = item['worker_id']
-                                    is_last = item.get('is_last', False)
-                                    
-                                    # Check if batch mode
-                                    tensors = item.get('tensors', [])
-                                    if tensors:
-                                        # Batch mode
-                                        if worker_id not in worker_images:
-                                            worker_images[worker_id] = {}
+                            collected_count += 1
+                        
+                        # Record activity and refresh timeout baseline
+                        last_activity = time.time()
+                        base_timeout = float(get_worker_timeout_seconds())
+                        
+                        if is_last:
+                            workers_done.add(worker_id)
+                            p.update(1)  # +1 per completed worker
+                        
+                    except asyncio.TimeoutError:
+                        # If we still have time, continue polling; otherwise handle timeout
+                        if (time.time() - last_activity) < base_timeout:
+                            comfy.model_management.throw_exception_if_processing_interrupted()
+                            continue
+                        # Re-check for user interruption after timeout expiry
+                        comfy.model_management.throw_exception_if_processing_interrupted()
+                        missing_workers = set(str(w) for w in enabled_workers) - workers_done
+                        log(f"Master - Timeout. Still waiting for workers: {list(missing_workers)}")
+                        
+                        # Check queue size again with lock
+                        async with prompt_server.distributed_jobs_lock:
+                            if multi_job_id in prompt_server.distributed_pending_jobs:
+                                final_q = prompt_server.distributed_pending_jobs[multi_job_id]
+                                final_size = final_q.qsize()
+                                
+                                # Try to drain any remaining items
+                                remaining_items = []
+                                while not final_q.empty():
+                                    try:
+                                        item = final_q.get_nowait()
+                                        remaining_items.append(item)
+                                    except asyncio.QueueEmpty:
+                                        break
+                                
+                                if remaining_items:
+                                    # Process them
+                                    for item in remaining_items:
+                                        worker_id = item['worker_id']
+                                        is_last = item.get('is_last', False)
                                         
-                                        for idx, tensor in enumerate(tensors):
-                                            worker_images[worker_id][idx] = tensor
+                                        # Check if batch mode
+                                        tensors = item.get('tensors', [])
+                                        if tensors:
+                                            # Batch mode
+                                            if worker_id not in worker_images:
+                                                worker_images[worker_id] = {}
+                                            
+                                            for idx, tensor in enumerate(tensors):
+                                                worker_images[worker_id][idx] = tensor
+                                            
+                                            collected_count += len(tensors)
+                                        else:
+                                            # Single image mode
+                                            image_index = item['image_index']
+                                            tensor = item['tensor']
+                                            
+                                            if worker_id not in worker_images:
+                                                worker_images[worker_id] = {}
+                                            worker_images[worker_id][image_index] = tensor
+                                            
+                                            collected_count += 1
                                         
-                                        collected_count += len(tensors)
-                                    else:
-                                        # Single image mode
-                                        image_index = item['image_index']
-                                        tensor = item['tensor']
-                                        
-                                        if worker_id not in worker_images:
-                                            worker_images[worker_id] = {}
-                                        worker_images[worker_id][image_index] = tensor
-                                        
-                                        collected_count += 1
-                                    
-                                    if is_last:
-                                        workers_done.add(worker_id)
-                                        p.update(1)  # +1 here too
-                        else:
-                            log(f"Master - Queue {multi_job_id} no longer exists!")
-                    break
+                                        if is_last:
+                                            workers_done.add(worker_id)
+                                            p.update(1)  # +1 here too
+                            else:
+                                log(f"Master - Queue {multi_job_id} no longer exists!")
+                        break
+            except comfy.model_management.InterruptProcessingException:
+                # Cleanup queue on interruption and re-raise to abort prompt cleanly
+                async with prompt_server.distributed_jobs_lock:
+                    if multi_job_id in prompt_server.distributed_pending_jobs:
+                        del prompt_server.distributed_pending_jobs[multi_job_id]
+                raise
             
             total_collected = sum(len(imgs) for imgs in worker_images.values())
             
