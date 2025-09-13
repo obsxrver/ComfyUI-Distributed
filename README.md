@@ -111,7 +111,7 @@ Generate multiple videos in the time it takes to generate one. Each worker uses 
 7. Enable workers in the UI
 8. Run the workflow!
 
-### Distributed Upscaling
+### Distributed Image Upscaling
 Accelerate Ultimate SD Upscaler by distributing tiles across multiple workers, with speed scaling as you add more GPUs.
 
 ![Clipboard Image (3)](https://github.com/user-attachments/assets/ffb57a0d-7b75-4497-96d2-875d60865a1a)
@@ -123,6 +123,20 @@ Accelerate Ultimate SD Upscaler by distributing tiles across multiple workers, w
 3. Connect to **Ultimate SD Upscale Distributed**
 4. Configure tile settings
 5. Enable workers for faster processing
+
+### Distributed Video Upscaling
+Accelerate Ultimate SD Upscaler by distributing tiles across multiple workers, with speed scaling as you add more GPUs.
+
+<img width="1966" height="1175" alt="image" src="https://github.com/user-attachments/assets/07dc7d5a-a615-4ccc-a2eb-1e85e854401b" />
+
+> [Download workflow](/workflows/distributed-upscale-video.json)
+
+1. Load your video
+2. Optional: upscale with ESRGAN or similar
+3. Connect to **Ultimate SD Upscale Distributed**
+4. Configure tile settings
+5. Use RES4LYF (bong/res2) to get better results
+6. Enable workers for faster processing
 
 ---
 
@@ -175,6 +189,7 @@ If my custom nodes have added value to your workflow, consider fueling future de
 Your support helps keep this project thriving.
 
 Buy me a coffee at: https://buymeacoffee.com/robertvoy
+
 
 
 
