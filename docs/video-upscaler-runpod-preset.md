@@ -6,7 +6,7 @@
 2. Filter instances by CUDA 12.8 (add filter in Additional Filters at the top of the page).
 3. Choose 4x 5090s
 4. Press Edit Template to configure the pod's Environment Variables:
-	- CIVITAI_API_TOKEN: [get your token here](https://civitai.com/user/account)
+	- CIVITAI_API_TOKEN: Not necessary for this workflow.
 	- HF_API_TOKEN: [get your token here](https://huggingface.co/settings/tokens)
 	- SAGE_ATTENTION: optional optimisation (set to true/false). Recommended for this workflow.
 	- PRESET_VIDEO_UPSCALER: set to true. This will download everything you need.
