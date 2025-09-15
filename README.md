@@ -25,7 +25,7 @@
 #### Distributed Upscaling
 - Accelerate Ultimate SD Upscale by distributing tiles across GPUs
 - Intelligent distribution
-- Handles single images and batches
+- Handles single images and videos
 
 #### Ease of Use
 - Auto-setup local workers; easily add remote/cloud ones
@@ -191,6 +191,7 @@ If my custom nodes have added value to your workflow, consider fueling future de
 Your support helps keep this project thriving.
 
 Buy me a coffee at: https://buymeacoffee.com/robertvoy
+
 
 
 
