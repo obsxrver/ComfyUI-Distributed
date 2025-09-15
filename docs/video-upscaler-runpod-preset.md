@@ -12,7 +12,7 @@
 	- PRESET_VIDEO_UPSCALER: set to true. This will download everything you need.
 5. Deploy your pod.
 6. Once pod setup is complete, connect to ComfyUI running on your pod.
-7. Open the GPU panel on the left.
+7. In ComfyUI, open the GPU panel on the left.
 > If you set SAGE_ATTENTION to true, add "--use-sage-attention" to Extra Args on the workers.
 8. Launch the workers.
 9. Upload video, add prompt and run workflow.
