@@ -138,6 +138,8 @@ Accelerate Ultimate SD Upscaler by distributing video tiles across multiple work
 5. Use RES4LYF (bong/res2) to get better results
 6. Enable workers for faster processing
 
+> You can run this workflow entirely on Runpod with minimal setup. [Check out the guide here.](https://github.com/robertvoy/ComfyUI-Distributed/blob/main/docs/video-upscaler-runpod-preset.md)
+
 ---
 
 ## FAQ
@@ -189,6 +191,7 @@ If my custom nodes have added value to your workflow, consider fueling future de
 Your support helps keep this project thriving.
 
 Buy me a coffee at: https://buymeacoffee.com/robertvoy
+
 
 
 
