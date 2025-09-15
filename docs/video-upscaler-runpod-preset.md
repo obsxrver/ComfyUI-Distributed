@@ -15,5 +15,6 @@
 7. In ComfyUI, open the GPU panel on the left.
 > If you set SAGE_ATTENTION to true, add "--use-sage-attention" to Extra Args on the workers.
 8. Launch the workers.
-9. Upload video, add prompt and run workflow.
-10. Right-click the Video Combine node and click Save Preview to save the video.
+9. [Load the workflow.](https://github.com/robertvoy/ComfyUI-Distributed/blob/main/workflows/distributed-upscale-video.json)
+10. Upload video, add prompt and run workflow.
+11. Right-click the Video Combine node and click Save Preview to save the video.
