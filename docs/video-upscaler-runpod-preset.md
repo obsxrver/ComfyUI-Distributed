@@ -1,6 +1,6 @@
 ![Clipboard Image](https://github.com/user-attachments/assets/5dc5224f-3f47-442c-b94a-116afeb28132)
 
-**Accelerated Video Upscaler On Runpod:**
+**Accelerated Creative Video Upscaler On Runpod:**
 
 1. Use the [ComfyUI Distributed Pod](https://console.runpod.io/deploy?template=m21ynvo8yo&ref=0bw29uf3ug0p) template.
 2. Filter instances by CUDA 12.8 (add filter in Additional Filters at the top of the page).
