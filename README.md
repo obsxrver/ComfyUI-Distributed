@@ -5,7 +5,7 @@
 <a href="/docs/worker-setup-guides.md"><img src="https://img.shields.io/badge/Setup_Guides-grey?style=flat&logo=gitbook&logoColor=white" alt="Setup Guides"></a>
 <a href="/workflows"><img src="https://img.shields.io/badge/Workflows-grey?style=flat&logo=json&logoColor=white" alt="Workflows"></a>
 <a href="https://buymeacoffee.com/robertvoy"><img src="https://img.shields.io/badge/Donation-grey?style=flat&logo=buymeacoffee&logoColor=white" alt="Donation"></a>
-<a href="https://x.com/robertvoy3D"><img src="https://img.shields.io/twitter/follow/robertvoy3D" alt="Twitter"></a>
+<a href="https://x.com/rbw_ai"><img src="https://img.shields.io/twitter/follow/rbw_ai" alt="Twitter"></a>
 <br><br>
 </div>
 
@@ -191,6 +191,7 @@ If my custom nodes have added value to your workflow, consider fueling future de
 Your support helps keep this project thriving.
 
 Buy me a coffee at: https://buymeacoffee.com/robertvoy
+
 
 
 
