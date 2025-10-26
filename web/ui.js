@@ -3,28 +3,25 @@ import { BUTTON_STYLES, UI_STYLES, STATUS_COLORS, UI_COLORS, TIMEOUTS } from './
 const cardConfigs = {
     master: {
         checkbox: { 
-            enabled: false, 
-            checked: true, 
-            disabled: true, 
-            opacity: 0.6, 
-            title: "Master node is always enabled" 
+            enabled: true,
+            masterToggle: true,
+            title: "Toggle master participation in workloads"
         },
         statusDot: { 
-            color: STATUS_COLORS.ONLINE_GREEN,
-            title: 'Online',
             id: 'master-status',
+            initialColor: (_, extension) => extension.isMasterParticipating() ? STATUS_COLORS.ONLINE_GREEN : STATUS_COLORS.DISABLED_GRAY,
+            initialTitle: (_, extension) => extension.isMasterParticipating() ? 'Master participating' : 'Master orchestrator only',
             dynamic: true
         },
         infoText: (data, extension) => {
             const cudaDevice = extension.config?.master?.cuda_device ?? extension.masterCudaDevice;
             const cudaInfo = cudaDevice !== undefined ? `CUDA ${cudaDevice} • ` : '';
             const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-            return `<strong id="master-name-display">${data?.name || extension.config?.master?.name || "Master"}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};"><span id="master-cuda-info">${cudaInfo}Port ${port}</span></small>`;
+            const delegateBadge = extension.isMasterParticipating() ? '' : `<br><small style="color: ${UI_COLORS.SECONDARY_TEXT};">Orchestrator-only mode</small>`;
+            return `<strong id="master-name-display">${data?.name || extension.config?.master?.name || "Master"}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};"><span id="master-cuda-info">${cudaInfo}Port ${port}</span></small>${delegateBadge}`;
         },
         controls: { 
-            type: 'info', 
-            text: 'Master', 
-            style: "background-color: #333; color: #999;" 
+            type: 'master'
         },
         settings: { 
             formType: 'master', 
@@ -868,7 +865,24 @@ export class DistributedUI {
             if (config?.opacity) checkbox.style.opacity = config.opacity;
             if (config?.title) column.title = config.title;
             
-            if (config?.enabled && !config?.disabled && data?.id) {
+            const isMasterToggle = config?.masterToggle && typeof extension.isMasterParticipating === 'function';
+            if (isMasterToggle) {
+                const participating = extension.isMasterParticipating();
+                checkbox.checked = participating;
+                checkbox.style.pointerEvents = "none";
+                column.style.cursor = "pointer";
+                column.title = participating ? "Master participating • Click to switch to orchestrator-only" : "Master orchestrator-only • Click to re-enable participation";
+                column.onclick = async (event) => {
+                    if (event) {
+                        event.stopPropagation();
+                        event.preventDefault();
+                    }
+                    const targetState = !checkbox.checked;
+                    checkbox.checked = targetState;
+                    column.title = targetState ? "Master participating • Click to switch to orchestrator-only" : "Master orchestrator-only • Click to re-enable participation";
+                    await extension.updateMasterParticipation(targetState);
+                };
+            } else if (config?.enabled && !config?.disabled && data?.id) {
                 checkbox.style.pointerEvents = "none";
                 column.style.cursor = "pointer";
                 column.onclick = async () => {
@@ -890,10 +904,10 @@ export class DistributedUI {
         let id = config.id;
         
         if (typeof config.initialColor === 'function') {
-            color = config.initialColor(data);
+            color = config.initialColor(data, extension);
         }
         if (typeof config.initialTitle === 'function') {
-            title = config.initialTitle(data);
+            title = config.initialTitle(data, extension);
         }
         if (typeof config.id === 'function') {
             id = config.id(data);
@@ -940,7 +954,18 @@ export class DistributedUI {
         const controlsWrapper = document.createElement("div");
         controlsWrapper.style.cssText = this.styles.controlsWrapper;
         
-        if (config.dynamic && data) {
+        if (config.type === 'master') {
+            const participating = extension.isMasterParticipating();
+            const message = participating ? "Master participating in workflows" : "Master disabled: running as orchestrator only";
+            const badge = document.createElement("div");
+            badge.style.cssText = this.styles.infoBox;
+            badge.textContent = message;
+            if (!participating) {
+                badge.style.backgroundColor = "#3a3a3a";
+                badge.style.color = "#ffcc66";
+            }
+            controlsWrapper.appendChild(badge);
+        } else if (config.dynamic && data) {
             if (isRemote) {
                 const isCloud = data.type === 'cloud';
                 const workerTypeText = isCloud ? "Cloud worker" : "Remote worker";

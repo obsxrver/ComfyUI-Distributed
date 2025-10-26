@@ -23,7 +23,15 @@ from comfy.utils import ProgressBar
 
 # Import shared utilities
 from .utils.logging import debug_log, log
-from .utils.config import CONFIG_FILE, get_default_config, load_config, save_config, ensure_config_exists, get_worker_timeout_seconds
+from .utils.config import (
+    CONFIG_FILE,
+    get_default_config,
+    load_config,
+    save_config,
+    ensure_config_exists,
+    get_worker_timeout_seconds,
+    is_master_delegate_only,
+)
 from .utils.image import tensor_to_pil, pil_to_tensor, ensure_contiguous
 from .utils.process import is_process_alive, terminate_process, get_python_executable
 from .utils.network import handle_api_error, get_server_port, get_server_loop, get_client_session, cleanup_client_session
@@ -1813,6 +1821,7 @@ class DistributedCollectorNode:
                 "worker_batch_size": ("INT", {"default": 1, "min": 1, "max": 1024}),
                 "worker_id": ("STRING", {"default": ""}),
                 "pass_through": ("BOOLEAN", {"default": False}),
+                "delegate_only": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -1820,7 +1829,7 @@ class DistributedCollectorNode:
     FUNCTION = "run"
     CATEGORY = "image"
     
-    def run(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", pass_through=False):
+    def run(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", pass_through=False, delegate_only=False):
         if not multi_job_id or pass_through:
             if pass_through:
                 print(f"[Distributed Collector] Pass-through mode enabled, returning images unchanged")
@@ -1828,7 +1837,7 @@ class DistributedCollectorNode:
 
         # Use async helper to run in server loop
         result = run_async_in_server_loop(
-            self.execute(images, multi_job_id, is_worker, master_url, enabled_worker_ids, worker_batch_size, worker_id)
+            self.execute(images, multi_job_id, is_worker, master_url, enabled_worker_ids, worker_batch_size, worker_id, delegate_only)
         )
         return result
 
@@ -1876,25 +1885,31 @@ class DistributedCollectorNode:
                 raise  # Re-raise to handle at caller level
 
 
-    async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id=""):
+    async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", delegate_only=False):
         if is_worker:
             # Worker mode: send images to master in a single batch
             debug_log(f"Worker - Job {multi_job_id} complete. Sending {images.shape[0]} image(s) to master")
             await self.send_batch_to_master(images, multi_job_id, master_url, worker_id)
             return (images,)
         else:
+            delegate_mode = delegate_only or is_master_delegate_only()
             # Master mode: collect images from workers
             enabled_workers = json.loads(enabled_worker_ids)
             num_workers = len(enabled_workers)
             if num_workers == 0:
                 return (images,)
             
-            images_on_cpu = images.cpu()
-            master_batch_size = images.shape[0]
-            debug_log(f"Master - Job {multi_job_id}: Master has {master_batch_size} images, collecting from {num_workers} workers...")
-            
-            # Ensure master images are contiguous
-            images_on_cpu = ensure_contiguous(images_on_cpu)
+            if delegate_mode:
+                master_batch_size = 0
+                images_on_cpu = None
+                debug_log(f"Master - Job {multi_job_id}: Delegate-only mode enabled, collecting exclusively from {num_workers} workers")
+            else:
+                images_on_cpu = images.cpu()
+                master_batch_size = images.shape[0]
+                debug_log(f"Master - Job {multi_job_id}: Master has {master_batch_size} images, collecting from {num_workers} workers...")
+                
+                # Ensure master images are contiguous
+                images_on_cpu = ensure_contiguous(images_on_cpu)
             
             
             # Initialize storage for collected images
@@ -2101,9 +2116,10 @@ class DistributedCollectorNode:
             # Pattern: master img 1, master img 2, worker 1 img 1, worker 1 img 2, worker 2 img 1, worker 2 img 2, etc.
             ordered_tensors = []
             
-            # Add master images first
-            for i in range(master_batch_size):
-                ordered_tensors.append(images_on_cpu[i:i+1])
+            # Add master images first (if any)
+            if not delegate_mode and images_on_cpu is not None:
+                for i in range(master_batch_size):
+                    ordered_tensors.append(images_on_cpu[i:i+1])
             
             # Add worker images in order
             # The worker IDs in worker_images are already strings (e.g., "1", "2")
@@ -2123,7 +2139,13 @@ class DistributedCollectorNode:
                 cpu_tensors.append(t)
             
             try:
-                combined = torch.cat(cpu_tensors, dim=0)
+                if cpu_tensors:
+                    combined = torch.cat(cpu_tensors, dim=0)
+                else:
+                    # No tensors collected (likely delegate mode with no worker output)
+                    combined = ensure_contiguous(images) if images is not None else images
+                    if combined is None:
+                        raise ValueError("No image data collected from master or workers")
                 # Ensure the combined tensor is contiguous and properly formatted
                 combined = ensure_contiguous(combined)
                 debug_log(f"Master - Job {multi_job_id} complete. Combined {combined.shape[0]} images total (master: {master_batch_size}, workers: {combined.shape[0] - master_batch_size})")
@@ -2262,13 +2284,40 @@ class ImageBatchDivider:
         return tuple(outputs)
 
 
+class DistributedEmptyImage:
+    """Produces an empty IMAGE batch used when the master delegates all work."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "height": ("INT", {"default": 64, "min": 1, "max": 4096, "step": 1}),
+                "width": ("INT", {"default": 64, "min": 1, "max": 4096, "step": 1}),
+                "channels": ("INT", {"default": 3, "min": 1, "max": 4, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "create"
+    CATEGORY = "image"
+
+    def create(self, height, width, channels):
+        import torch
+
+        shape = (0, height, width, channels)
+        tensor = torch.zeros(shape, dtype=torch.float32)
+        return (tensor,)
+
+
 NODE_CLASS_MAPPINGS = { 
     "DistributedCollector": DistributedCollectorNode,
     "DistributedSeed": DistributedSeed,
-    "ImageBatchDivider": ImageBatchDivider
+    "ImageBatchDivider": ImageBatchDivider,
+    "DistributedEmptyImage": DistributedEmptyImage,
 }
 NODE_DISPLAY_NAME_MAPPINGS = { 
     "DistributedCollector": "Distributed Collector",
     "DistributedSeed": "Distributed Seed",
-    "ImageBatchDivider": "Image Batch Divider"
+    "ImageBatchDivider": "Image Batch Divider",
+    "DistributedEmptyImage": "Distributed Empty Image",
 }
