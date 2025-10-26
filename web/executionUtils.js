@@ -135,7 +135,9 @@ export async function executeParallelDistributed(extension, promptWrapper) {
         const wantsDelegate = Boolean(extension.config?.settings?.master_delegate_only);
         let masterDelegateActive = false;
         if (wantsDelegate) {
-            if (upscaleNodes.length > 0) {
+            if (activeWorkers.length === 0) {
+                extension.log("Master delegate-only mode disabled: no active workers detected. Falling back to master execution.", "debug");
+            } else if (upscaleNodes.length > 0) {
                 extension.log("Master delegate-only mode is not yet supported for UltimateSDUpscaleDistributed nodes. Falling back to normal execution.", "warn");
             } else if (collectorNodes.length === 0) {
                 extension.log("Master delegate-only mode requested but no DistributedCollector nodes found. Falling back to normal execution.", "debug");

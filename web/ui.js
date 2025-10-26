@@ -17,7 +17,14 @@ const cardConfigs = {
             const cudaDevice = extension.config?.master?.cuda_device ?? extension.masterCudaDevice;
             const cudaInfo = cudaDevice !== undefined ? `CUDA ${cudaDevice} • ` : '';
             const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-            const delegateBadge = extension.isMasterParticipating() ? '' : `<br><small style="color: ${UI_COLORS.SECONDARY_TEXT};">Orchestrator-only mode</small>`;
+            const participationEnabled = extension.isMasterParticipationEnabled();
+            const fallbackActive = extension.isMasterFallbackActive();
+            let delegateBadge = '';
+            if (!participationEnabled) {
+                delegateBadge = fallbackActive
+                    ? `<br><small style="color: #6bd06b;">Fallback active • Master executing</small>`
+                    : `<br><small style="color: ${UI_COLORS.SECONDARY_TEXT};">Orchestrator-only mode</small>`;
+            }
             return `<strong id="master-name-display">${data?.name || extension.config?.master?.name || "Master"}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};"><span id="master-cuda-info">${cudaInfo}Port ${port}</span></small>${delegateBadge}`;
         },
         controls: { 
@@ -867,20 +874,32 @@ export class DistributedUI {
             
             const isMasterToggle = config?.masterToggle && typeof extension.isMasterParticipating === 'function';
             if (isMasterToggle) {
-                const participating = extension.isMasterParticipating();
-                checkbox.checked = participating;
+                const participationEnabled = extension.isMasterParticipationEnabled();
+                const fallbackActive = extension.isMasterFallbackActive();
+                const buildTitle = (enabled, fallback) => {
+                    if (enabled) {
+                        return "Master participating • Click to switch to orchestrator-only";
+                    }
+                    if (fallback) {
+                        return "No workers selected • Master fallback execution active";
+                    }
+                    return "Master orchestrator-only • Click to re-enable participation";
+                };
+
+                checkbox.checked = participationEnabled;
                 checkbox.style.pointerEvents = "none";
                 column.style.cursor = "pointer";
-                column.title = participating ? "Master participating • Click to switch to orchestrator-only" : "Master orchestrator-only • Click to re-enable participation";
+                column.title = buildTitle(participationEnabled, fallbackActive);
                 column.onclick = async (event) => {
                     if (event) {
                         event.stopPropagation();
                         event.preventDefault();
                     }
-                    const targetState = !checkbox.checked;
-                    checkbox.checked = targetState;
-                    column.title = targetState ? "Master participating • Click to switch to orchestrator-only" : "Master orchestrator-only • Click to re-enable participation";
-                    await extension.updateMasterParticipation(targetState);
+                    const nextState = !extension.isMasterParticipationEnabled();
+                    const nextFallback = !nextState && extension.enabledWorkers.length === 0;
+                    checkbox.checked = nextState;
+                    column.title = buildTitle(nextState, nextFallback);
+                    await extension.updateMasterParticipation(nextState);
                 };
             } else if (config?.enabled && !config?.disabled && data?.id) {
                 checkbox.style.pointerEvents = "none";
@@ -955,14 +974,25 @@ export class DistributedUI {
         controlsWrapper.style.cssText = this.styles.controlsWrapper;
         
         if (config.type === 'master') {
-            const participating = extension.isMasterParticipating();
-            const message = participating ? "Master participating in workflows" : "Master disabled: running as orchestrator only";
+            const participationEnabled = extension.isMasterParticipationEnabled();
+            const fallbackActive = extension.isMasterFallbackActive();
+            let message;
             const badge = document.createElement("div");
             badge.style.cssText = this.styles.infoBox;
-            badge.textContent = message;
-            if (!participating) {
+            if (fallbackActive) {
+                message = "No workers selected. Master fallback execution active.";
+                badge.textContent = message;
+                badge.style.backgroundColor = "#243024";
+                badge.style.color = "#6bd06b";
+                badge.style.border = "1px solid #335533";
+            } else if (!participationEnabled) {
+                message = "Master disabled: running as orchestrator only.";
+                badge.textContent = message;
                 badge.style.backgroundColor = "#3a3a3a";
                 badge.style.color = "#ffcc66";
+            } else {
+                message = "Master participating in workflows.";
+                badge.textContent = message;
             }
             controlsWrapper.appendChild(badge);
         } else if (config.dynamic && data) {

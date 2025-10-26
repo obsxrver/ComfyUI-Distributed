@@ -90,8 +90,16 @@ class DistributedExtension {
         return this.enabledWorkers.length > 0;
     }
 
+    isMasterParticipationEnabled() {
+        return !Boolean(this.config?.settings?.master_delegate_only);
+    }
+
+    isMasterFallbackActive() {
+        return Boolean(this.config?.settings?.master_delegate_only) && this.enabledWorkers.length === 0;
+    }
+
     isMasterParticipating() {
-        return !(this.config?.settings?.master_delegate_only);
+        return this.isMasterParticipationEnabled() || this.isMasterFallbackActive();
     }
 
     async updateMasterParticipation(enabled) {
@@ -162,6 +170,10 @@ class DistributedExtension {
             await this.api.updateWorker(workerId, { enabled });
         } catch (error) {
             this.log("Error updating worker: " + error.message, "error");
+        }
+
+        if (this.panelElement) {
+            renderSidebarContent(this, this.panelElement);
         }
     }
 
