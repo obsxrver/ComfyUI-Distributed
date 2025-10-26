@@ -33,6 +33,10 @@ class DistributedExtension {
         // Initialize abort controller for status checks
         this.statusCheckAbortController = null;
 
+        // Track ongoing status requests to avoid overwhelming worker endpoints
+        this.workerStatusInFlight = new Set();
+        this.lastWorkerStatusCheck = new Map();
+
         // Inject CSS for pulsing animation
         this.injectStyles();
 
@@ -130,7 +134,7 @@ class DistributedExtension {
                 if (enabled) {
                     // Enabled: Start with checking state and trigger check
                     this.ui.updateStatusDot(workerId, STATUS_COLORS.OFFLINE_RED, "Checking status...", true);
-                    setTimeout(() => this.checkWorkerStatus(worker), TIMEOUTS.STATUS_CHECK_DELAY);
+                    setTimeout(() => this.checkWorkerStatus(worker, { force: true }), TIMEOUTS.STATUS_CHECK_DELAY);
                 } else {
                     // Disabled: Set to gray
                     this.ui.updateStatusDot(workerId, STATUS_COLORS.DISABLED_GRAY, "Disabled", false);
@@ -275,8 +279,8 @@ class DistributedExtension {
             }
         });
 
-        // Set next delay: 1s if active, 5s if idle
-        const nextInterval = isActive ? 1000 : 5000;
+        // Set next delay: slower cadence when idle to reduce load on worker tunnels
+        const nextInterval = isActive ? TIMEOUTS.STATUS_POLL_ACTIVE : TIMEOUTS.STATUS_POLL_IDLE;
 
         // Schedule the next check
         this.statusCheckTimeout = setTimeout(() => this.checkAllWorkerStatuses(), nextInterval);
@@ -355,52 +359,76 @@ class DistributedExtension {
         return `${protocol}://${finalHost}${portStr}${endpoint}`;
     }
 
-    async checkWorkerStatus(worker) {
+    async checkWorkerStatus(worker, options = {}) {
+        const { force = false } = options;
+        const workerId = worker.id;
+        const now = Date.now();
+
+        const status = this.state.getWorkerStatus(workerId) || {};
+        const isLaunching = this.state.isWorkerLaunching(workerId);
+        const minInterval = force
+            ? 0
+            : (status.processing || isLaunching
+                ? TIMEOUTS.STATUS_POLL_ACTIVE
+                : TIMEOUTS.STATUS_POLL_IDLE);
+
+        const lastCheck = this.lastWorkerStatusCheck.get(workerId) || 0;
+        if (!force) {
+            if (this.workerStatusInFlight.has(workerId)) {
+                return;
+            }
+            if (now - lastCheck < minInterval) {
+                return;
+            }
+        }
+
+        this.workerStatusInFlight.add(workerId);
+
         // Assume caller ensured enabled; proceed with check
         const url = this.getWorkerUrl(worker, '/prompt');
-        const statusDot = document.getElementById(`status-${worker.id}`);
-        
+        const statusDot = document.getElementById(`status-${workerId}`);
+
         try {
             // Combine timeout with abort controller signal
             const timeoutSignal = AbortSignal.timeout(TIMEOUTS.STATUS_CHECK);
-            const signal = this.statusCheckAbortController 
+            const signal = this.statusCheckAbortController
                 ? AbortSignal.any([timeoutSignal, this.statusCheckAbortController.signal])
                 : timeoutSignal;
-            
+
             const response = await fetch(url, {
                 method: 'GET',
                 mode: 'cors',
                 signal: signal
             });
-            
+
             if (response.ok) {
                 const data = await response.json();
                 const queueRemaining = data.exec_info?.queue_remaining || 0;
                 const isProcessing = queueRemaining > 0;
-                
+
                 // Update status
-                this.state.setWorkerStatus(worker.id, {
+                this.state.setWorkerStatus(workerId, {
                     online: true,
                     processing: isProcessing,
                     queueCount: queueRemaining
                 });
-                
+
                 // Update status dot based on processing state
                 if (isProcessing) {
                     this.ui.updateStatusDot(
-                        worker.id,
+                        workerId,
                         "#f0ad4e",
                         `Online - Processing (${queueRemaining} in queue)`,
                         false
                     );
                 } else {
-                    this.ui.updateStatusDot(worker.id, "#3ca03c", "Online - Idle", false);
+                    this.ui.updateStatusDot(workerId, "#3ca03c", "Online - Idle", false);
                 }
-                
+
                 // Clear launching state since worker is now online
-                if (this.state.isWorkerLaunching(worker.id)) {
-                    this.state.setWorkerLaunching(worker.id, false);
-                    this.clearLaunchingFlag(worker.id);
+                if (this.state.isWorkerLaunching(workerId)) {
+                    this.state.setWorkerLaunching(workerId, false);
+                    this.clearLaunchingFlag(workerId);
                 }
             } else {
                 throw new Error(`HTTP ${response.status}`);
@@ -410,28 +438,31 @@ class DistributedExtension {
             if (error.name === 'AbortError') {
                 return;
             }
-            
+
             // Worker is offline or unreachable
-            this.state.setWorkerStatus(worker.id, {
+            this.state.setWorkerStatus(workerId, {
                 online: false,
                 processing: false,
                 queueCount: 0
             });
-            
+
             // Check if worker is launching
-            if (this.state.isWorkerLaunching(worker.id)) {
-                this.ui.updateStatusDot(worker.id, "#f0ad4e", "Launching...", true);
+            if (isLaunching) {
+                this.ui.updateStatusDot(workerId, "#f0ad4e", "Launching...", true);
             } else if (worker.enabled) {
                 // Only update to red if not currently launching AND still enabled
-                this.ui.updateStatusDot(worker.id, "#c04c4c", "Offline - Cannot connect", false);
+                this.ui.updateStatusDot(workerId, "#c04c4c", "Offline - Cannot connect", false);
             }
             // If disabled, don't update the dot (leave it gray)
-            
-            this.log(`Worker ${worker.id} status check failed: ${error.message}`, "debug");
+
+            this.log(`Worker ${workerId} status check failed: ${error.message}`, "debug");
+        } finally {
+            this.lastWorkerStatusCheck.set(workerId, Date.now());
+            this.workerStatusInFlight.delete(workerId);
         }
-        
+
         // Update control buttons based on new status
-        this.updateWorkerControls(worker.id);
+        this.updateWorkerControls(workerId);
     }
 
     async launchWorker(workerId) {
@@ -480,14 +511,14 @@ class DistributedExtension {
                 
                 // Update controls immediately to hide launch button and show stop/log buttons
                 this.updateWorkerControls(workerId);
-                setTimeout(() => this.checkWorkerStatus(worker), TIMEOUTS.STATUS_CHECK);
+                setTimeout(() => this.checkWorkerStatus(worker, { force: true }), TIMEOUTS.STATUS_CHECK);
             }
         } catch (error) {
             // Check if worker was already running
             if (error.message && error.message.includes("already running")) {
                 this.log(`Worker ${worker.name} is already running`, "info");
                 this.updateWorkerControls(workerId);
-                setTimeout(() => this.checkWorkerStatus(worker), TIMEOUTS.STATUS_CHECK_DELAY);
+                setTimeout(() => this.checkWorkerStatus(worker, { force: true }), TIMEOUTS.STATUS_CHECK_DELAY);
             } else {
                 this.log(`Error launching worker: ${error.message || error}`, "error");
                 
@@ -530,7 +561,7 @@ class DistributedExtension {
                 }
                 
                 // Verify status after a short delay
-                setTimeout(() => this.checkWorkerStatus(worker), TIMEOUTS.STATUS_CHECK);
+                setTimeout(() => this.checkWorkerStatus(worker, { force: true }), TIMEOUTS.STATUS_CHECK);
             } else {
                 this.log(`Failed to stop worker: ${result.message}`, "error");
                 

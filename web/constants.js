@@ -133,6 +133,8 @@ export const UI_STYLES = {
 export const TIMEOUTS = {
     DEFAULT_FETCH: 5000, // ms for general API calls
     STATUS_CHECK: 1200, // ms for status checks
+    STATUS_POLL_ACTIVE: 2000, // interval between polls when workers are active
+    STATUS_POLL_IDLE: 6000, // interval between polls when system is idle
     LAUNCH: 90000, // ms for worker launch (longer for model loading)
     RETRY_DELAY: 1000, // initial delay for exponential backoff
     MAX_RETRIES: 3, // max retry attempts
