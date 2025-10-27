@@ -36,12 +36,13 @@ const cardConfigs = {
         border: 'solid'
     },
     worker: {
-        checkbox: { 
-            enabled: true, 
-            title: "Enable/disable this worker" 
+        checkbox: {
+            enabled: true,
+            title: "Enable/disable this worker"
         },
-        statusDot: { 
+        statusDot: {
             dynamic: true,
+            useState: true,
             initialColor: (data) => data.enabled ? STATUS_COLORS.OFFLINE_RED : STATUS_COLORS.DISABLED_GRAY,
             initialTitle: (data) => data.enabled ? "Checking status..." : "Disabled",
             pulsing: (data) => data.enabled,
@@ -888,27 +889,66 @@ export class DistributedUI {
         let color = config.color || "#666";
         let title = config.title || "Status";
         let id = config.id;
-        
+        let pulsing = false;
+
         if (typeof config.initialColor === 'function') {
-            color = config.initialColor(data);
+            color = config.initialColor(data, extension);
         }
         if (typeof config.initialTitle === 'function') {
-            title = config.initialTitle(data);
+            title = config.initialTitle(data, extension);
         }
         if (typeof config.id === 'function') {
-            id = config.id(data);
+            id = config.id(data, extension);
         }
-        
+        if (typeof config.pulsing === 'function') {
+            pulsing = !!config.pulsing(data, extension);
+        } else if (config.pulsing) {
+            pulsing = true;
+        }
+
+        if (config.useState && extension && data?.id) {
+            const workerState = extension.state.getWorker(data.id);
+            const storedStatus = extension.state.getWorkerStatus(data.id);
+            const isLaunching = extension.state.isWorkerLaunching(data.id);
+            const isEnabled = (workerState?.enabled !== undefined) ? workerState.enabled : data.enabled;
+
+            if (!isEnabled) {
+                color = STATUS_COLORS.DISABLED_GRAY;
+                title = "Disabled";
+                pulsing = false;
+            } else if (isLaunching) {
+                color = STATUS_COLORS.PROCESSING_YELLOW;
+                title = "Launching...";
+                pulsing = true;
+            } else if (storedStatus?.online === true) {
+                if (storedStatus.processing) {
+                    const queue = storedStatus.queueCount ?? 0;
+                    color = STATUS_COLORS.PROCESSING_YELLOW;
+                    title = queue > 0
+                        ? `Online - Processing (${queue} in queue)`
+                        : "Online - Processing";
+                } else {
+                    color = STATUS_COLORS.ONLINE_GREEN;
+                    title = "Online - Idle";
+                }
+                pulsing = false;
+            } else if (storedStatus?.online === false) {
+                color = STATUS_COLORS.OFFLINE_RED;
+                title = "Offline - Cannot connect";
+                pulsing = false;
+            }
+        }
+
         const dot = this.createStatusDot(id, color, title);
-        
+
         if (config.border) {
             dot.style.border = config.border;
         }
-        
-        if (config.pulsing && (typeof config.pulsing !== 'function' || config.pulsing(data))) {
+
+        if (pulsing) {
             dot.classList.add('status-pulsing');
         }
-        
+
         return dot;
     }
 

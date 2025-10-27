@@ -209,9 +209,11 @@ class DistributedExtension {
     
     onPanelOpen() {
         this.log("Panel opened - starting status polling", "debug");
-        if (!this.statusCheckTimeout) {
-            this.checkAllWorkerStatuses();
+        if (this.statusCheckTimeout) {
+            clearTimeout(this.statusCheckTimeout);
+            this.statusCheckTimeout = null;
         }
+        this.checkAllWorkerStatuses({ force: true });
     }
     
     onPanelClose() {
@@ -248,7 +250,8 @@ class DistributedExtension {
         this.checkAllWorkerStatuses();
     }
 
-    async checkAllWorkerStatuses() {
+    async checkAllWorkerStatuses(options = {}) {
+        const { force = false } = options;
         // Don't continue if panel is closed
         if (!this.panelElement) return;
         
@@ -264,7 +267,7 @@ class DistributedExtension {
         for (const worker of this.config.workers) {
             // Check status for enabled workers OR workers that are launching
             if (worker.enabled || this.state.isWorkerLaunching(worker.id)) {
-                this.checkWorkerStatus(worker);
+                this.checkWorkerStatus(worker, { force });
             }
         }
         
