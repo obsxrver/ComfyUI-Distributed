@@ -6,6 +6,14 @@
 
 <img width="600" src="https://github.com/user-attachments/assets/609c42aa-8a1c-4a3f-939e-f3552fa1d54f" />
 
+### Master participation modes
+
+The master can either contribute GPU work or stay in **orchestrator-only** mode:
+
+- **Participating**: Master renders alongside workers, useful when you want every available GPU.
+- **Orchestrator-only**: Master sends jobs to selected workers but skips local rendering. Enable this by opening the Distributed panel and unchecking the master toggle. The master card will display *“Master disabled: running as orchestrator only.”*
+- **Fallback**: If orchestrator-only is enabled but no workers remain selected, the master automatically re-enables execution to guarantee the workflow still runs. The UI shows a green *“Master fallback execution active”* badge so you know work is executing locally again.
+
 ### Types of Workers
 
 - **Local workers**: Additional GPUs on the same machine as the master

@@ -156,6 +156,47 @@ export function findCollectorUpstreamNodes(apiPrompt, collectorIds) {
 }
 
 /**
+ * Find all downstream nodes from the provided collector IDs.
+ * Used to keep only post-collection nodes when master runs in orchestrator mode.
+ * @param {Object} apiPrompt
+ * @param {Array<string>} collectorIds
+ * @returns {Set<string>}
+ */
+export function findCollectorDownstreamNodes(apiPrompt, collectorIds) {
+    const adjacency = new Map();
+
+    for (const [nodeId, node] of Object.entries(apiPrompt)) {
+        if (!node.inputs) continue;
+        for (const inputValue of Object.values(node.inputs)) {
+            if (Array.isArray(inputValue) && inputValue.length === 2) {
+                const sourceId = String(inputValue[0]);
+                if (!adjacency.has(sourceId)) {
+                    adjacency.set(sourceId, new Set());
+                }
+                adjacency.get(sourceId).add(String(nodeId));
+            }
+        }
+    }
+
+    const connected = new Set(collectorIds);
+    const queue = [...collectorIds];
+
+    while (queue.length > 0) {
+        const current = queue.shift();
+        const dependents = adjacency.get(current);
+        if (!dependents) continue;
+        dependents.forEach((dependentId) => {
+            if (!connected.has(dependentId)) {
+                connected.add(dependentId);
+                queue.push(dependentId);
+            }
+        });
+    }
+
+    return connected;
+}
+
+/**
  * Prune workflow to only include nodes connected to distributed nodes
  * @param {Object} apiPrompt - The full workflow API prompt
  * @param {Array} distributedNodes - Array of distributed nodes (optional, will find if not provided)

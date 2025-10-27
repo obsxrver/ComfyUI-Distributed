@@ -18,7 +18,8 @@ def get_default_config():
         "settings": {
             "debug": False,
             "auto_launch_workers": False,
-            "stop_workers_on_master_exit": True
+            "stop_workers_on_master_exit": True,
+            "master_delegate_only": False
         }
     }
 
@@ -69,3 +70,12 @@ def get_worker_timeout_seconds(default: int = HEARTBEAT_TIMEOUT) -> int:
         return max(1, val)
     except Exception:
         return max(1, int(default))
+
+
+def is_master_delegate_only() -> bool:
+    """Returns True when master should skip local workload and act as orchestrator only."""
+    try:
+        cfg = load_config()
+        return bool(cfg.get('settings', {}).get('master_delegate_only', False))
+    except Exception:
+        return False

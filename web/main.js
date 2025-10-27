@@ -90,6 +90,34 @@ class DistributedExtension {
         return this.enabledWorkers.length > 0;
     }
 
+    isMasterParticipationEnabled() {
+        return !Boolean(this.config?.settings?.master_delegate_only);
+    }
+
+    isMasterFallbackActive() {
+        return Boolean(this.config?.settings?.master_delegate_only) && this.enabledWorkers.length === 0;
+    }
+
+    isMasterParticipating() {
+        return this.isMasterParticipationEnabled() || this.isMasterFallbackActive();
+    }
+
+    async updateMasterParticipation(enabled) {
+        if (!this.config?.settings) {
+            this.config.settings = {};
+        }
+        const delegateOnly = !enabled;
+        if (this.config.settings.master_delegate_only === delegateOnly) {
+            return;
+        }
+
+        await this._updateSetting('master_delegate_only', delegateOnly);
+
+        if (this.panelElement) {
+            renderSidebarContent(this, this.panelElement);
+        }
+    }
+
     async loadConfig() {
         try {
             this.config = await this.api.getConfig();
@@ -142,6 +170,10 @@ class DistributedExtension {
             await this.api.updateWorker(workerId, { enabled });
         } catch (error) {
             this.log("Error updating worker: " + error.message, "error");
+        }
+
+        if (this.panelElement) {
+            renderSidebarContent(this, this.panelElement);
         }
     }
 
@@ -300,11 +332,19 @@ class DistributedExtension {
                 // Update master status dot
                 const statusDot = document.getElementById('master-status');
                 if (statusDot) {
-                    if (isProcessing) {
-                        statusDot.style.backgroundColor = "#f0ad4e";
+                    if (!this.isMasterParticipating()) {
+                        if (isProcessing) {
+                            statusDot.style.backgroundColor = STATUS_COLORS.PROCESSING_YELLOW;
+                            statusDot.title = `Orchestrating (${queueRemaining} in queue)`;
+                        } else {
+                            statusDot.style.backgroundColor = STATUS_COLORS.DISABLED_GRAY;
+                            statusDot.title = "Master orchestrator only";
+                        }
+                    } else if (isProcessing) {
+                        statusDot.style.backgroundColor = STATUS_COLORS.PROCESSING_YELLOW;
                         statusDot.title = `Processing (${queueRemaining} in queue)`;
                     } else {
-                        statusDot.style.backgroundColor = "#4CAF50";
+                        statusDot.style.backgroundColor = STATUS_COLORS.ONLINE_GREEN;
                         statusDot.title = "Online";
                     }
                 }
@@ -313,8 +353,8 @@ class DistributedExtension {
             // Master is always online (we're running on it), so keep it green
             const statusDot = document.getElementById('master-status');
             if (statusDot) {
-                statusDot.style.backgroundColor = "#4CAF50";
-                statusDot.title = "Online";
+                statusDot.style.backgroundColor = this.isMasterParticipating() ? STATUS_COLORS.ONLINE_GREEN : STATUS_COLORS.DISABLED_GRAY;
+                statusDot.title = this.isMasterParticipating() ? "Online" : "Master orchestrator only";
             }
         }
     }

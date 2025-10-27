@@ -1,5 +1,5 @@
 import { api } from "../../scripts/api.js";
-import { findNodesByClass, findImageReferences, hasUpstreamNode, pruneWorkflowForWorker, getCachedWorkerSystemInfo } from './workerUtils.js';
+import { findNodesByClass, findImageReferences, hasUpstreamNode, pruneWorkflowForWorker, getCachedWorkerSystemInfo, findCollectorDownstreamNodes } from './workerUtils.js';
 import { TIMEOUTS } from './constants.js';
 
 /**
@@ -131,6 +131,21 @@ export async function executeParallelDistributed(extension, promptWrapper) {
         const collectorNodes = findNodesByClass(promptWrapper.output, "DistributedCollector");
         const upscaleNodes = findNodesByClass(promptWrapper.output, "UltimateSDUpscaleDistributed");
         const allDistributedNodes = [...collectorNodes, ...upscaleNodes];
+
+        const wantsDelegate = Boolean(extension.config?.settings?.master_delegate_only);
+        let masterDelegateActive = false;
+        if (wantsDelegate) {
+            if (activeWorkers.length === 0) {
+                extension.log("Master delegate-only mode disabled: no active workers detected. Falling back to master execution.", "debug");
+            } else if (upscaleNodes.length > 0) {
+                extension.log("Master delegate-only mode is not yet supported for UltimateSDUpscaleDistributed nodes. Falling back to normal execution.", "warn");
+            } else if (collectorNodes.length === 0) {
+                extension.log("Master delegate-only mode requested but no DistributedCollector nodes found. Falling back to normal execution.", "debug");
+            } else {
+                masterDelegateActive = true;
+                extension.log("Master delegate-only mode enabled: master will orchestrate without running upstream nodes.", "debug");
+            }
+        }
         
         // Map original node IDs to truly unique job IDs for this specific run
         const job_id_map = new Map(allDistributedNodes.map(node => [node.id, `${executionPrefix}_${node.id}`]));
@@ -147,7 +162,8 @@ export async function executeParallelDistributed(extension, promptWrapper) {
             const options = { 
                 enabled_worker_ids: activeWorkers.map(w => w.id), 
                 workflow: promptWrapper.workflow,
-                job_id_map: job_id_map // Pass the map of unique IDs
+                job_id_map: job_id_map, // Pass the map of unique IDs
+                delegate_master: masterDelegateActive && participantId === 'master'
             };
             
             const jobApiPrompt = await prepareApiPromptForParticipant(
@@ -187,11 +203,24 @@ export async function executeParallelDistributed(extension, promptWrapper) {
 export async function prepareApiPromptForParticipant(extension, baseApiPrompt, participantId, options = {}) {
     let jobApiPrompt = JSON.parse(JSON.stringify(baseApiPrompt));
     const isMaster = participantId === 'master';
+    const delegateMaster = Boolean(options.delegate_master);
     
     // Find all distributed nodes once (before pruning)
-    const collectorNodes = findNodesByClass(jobApiPrompt, "DistributedCollector");
+    let collectorNodes = findNodesByClass(jobApiPrompt, "DistributedCollector");
     const upscaleNodes = findNodesByClass(jobApiPrompt, "UltimateSDUpscaleDistributed");
-    const allDistributedNodes = [...collectorNodes, ...upscaleNodes];
+    let allDistributedNodes = [...collectorNodes, ...upscaleNodes];
+
+    if (isMaster && delegateMaster) {
+        if (upscaleNodes.length > 0) {
+            extension.log("Delegate-only master mode does not support UltimateSDUpscaleDistributed nodes yet. Using full prompt.", "warn");
+        } else if (collectorNodes.length === 0) {
+            extension.log("Delegate-only master mode requested but no collectors found in master prompt. Using full prompt.", "debug");
+        } else {
+            jobApiPrompt = prepareMasterDelegatePrompt(extension, jobApiPrompt, collectorNodes);
+            collectorNodes = findNodesByClass(jobApiPrompt, "DistributedCollector");
+            allDistributedNodes = [...collectorNodes, ...upscaleNodes];
+        }
+    }
     
     // For workers, handle platform-specific path conversion
     if (!isMaster) {
@@ -282,6 +311,9 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
             inputs.is_worker = !isMaster;
             if (isMaster) {
                 inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
+                if (delegateMaster) {
+                    inputs.delegate_only = true;
+                }
             } else {
                 inputs.master_url = extension.getMasterUrl();
                 // Also make the worker_job_id unique to prevent potential caching issues
@@ -321,6 +353,75 @@ export async function prepareDistributedJob(extension, multi_job_id) {
         extension.log("Error preparing job: " + error.message, "error");
         throw error;
     }
+}
+
+function createNumericIdGenerator(promptObj) {
+    let maxId = 0;
+    for (const key of Object.keys(promptObj)) {
+        const numeric = parseInt(key, 10);
+        if (!Number.isNaN(numeric)) {
+            maxId = Math.max(maxId, numeric);
+        }
+    }
+    return () => {
+        maxId += 1;
+        return String(maxId);
+    };
+}
+
+function prepareMasterDelegatePrompt(extension, apiPrompt, collectorNodes) {
+    const collectorIds = collectorNodes.map((node) => node.id);
+    const nodesToKeep = findCollectorDownstreamNodes(apiPrompt, collectorIds);
+
+    // Ensure collectors themselves are present
+    collectorIds.forEach((id) => nodesToKeep.add(id));
+
+    const prunedPrompt = {};
+    nodesToKeep.forEach((nodeId) => {
+        const nodeData = apiPrompt[nodeId];
+        if (nodeData) {
+            prunedPrompt[nodeId] = JSON.parse(JSON.stringify(nodeData));
+        }
+    });
+
+    const prunedIds = new Set(Object.keys(prunedPrompt));
+
+    // Remove dangling references to trimmed nodes
+    for (const [nodeId, node] of Object.entries(prunedPrompt)) {
+        if (!node.inputs) continue;
+        for (const [inputName, inputValue] of Object.entries(node.inputs)) {
+            if (Array.isArray(inputValue) && inputValue.length === 2) {
+                const sourceId = String(inputValue[0]);
+                if (!prunedIds.has(sourceId)) {
+                    delete node.inputs[inputName];
+                    extension.log(`Removed upstream reference '${inputName}' from node ${nodeId} for delegate-only master prompt.`, "debug");
+                }
+            }
+        }
+    }
+
+    const nextId = createNumericIdGenerator(prunedPrompt);
+    collectorIds.forEach((collectorId) => {
+        const collectorEntry = prunedPrompt[collectorId];
+        if (!collectorEntry) return;
+
+        const placeholderId = nextId();
+        prunedPrompt[placeholderId] = {
+            class_type: "DistributedEmptyImage",
+            inputs: {
+                height: 64,
+                width: 64,
+                channels: 3
+            }
+        };
+        prunedIds.add(placeholderId);
+
+        collectorEntry.inputs = collectorEntry.inputs || {};
+        collectorEntry.inputs.images = [placeholderId, 0];
+    });
+
+    extension.log(`Prepared delegate-only master prompt with ${Object.keys(prunedPrompt).length} nodes (kept ${nodesToKeep.size}).`, "debug");
+    return prunedPrompt;
 }
 
 export async function executeJobs(extension, jobs) {
