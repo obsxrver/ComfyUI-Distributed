@@ -257,18 +257,19 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
         }
     }
 
-    const imageDistributorNodes = findNodesByClass(jobApiPrompt, "DistributedImageSelector");
-    if (imageDistributorNodes.length > 0) {
-        extension.log(`Found ${imageDistributorNodes.length} image selector node(s)`, "debug");
+    const imagePrimitiveNodes = findNodesByClass(jobApiPrompt, "DistributedImagePrimitive");
+    if (imagePrimitiveNodes.length > 0) {
+        extension.log(`Found ${imagePrimitiveNodes.length} image primitive node(s)`, "debug");
     }
 
-    for (const imageNode of imageDistributorNodes) {
+    for (const imageNode of imagePrimitiveNodes) {
         const { inputs } = jobApiPrompt[imageNode.id];
         inputs.is_worker = !isMaster;
+        inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
         if (!isMaster) {
             const workerIndex = options.enabled_worker_ids.indexOf(participantId);
             inputs.worker_id = `worker_${workerIndex}`;
-            extension.log(`Set image selector ${imageNode.id} for worker ${workerIndex}`, "debug");
+            extension.log(`Set image primitive ${imageNode.id} for worker ${workerIndex}`, "debug");
         }
     }
 
