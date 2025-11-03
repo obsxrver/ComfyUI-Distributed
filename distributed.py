@@ -2188,6 +2188,71 @@ class DistributedSeed:
                 # Fallback: return original seed
                 return (seed,)
 
+class DistributedImageSelector:
+    """Selects different image inputs for each worker."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "master_image": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "tooltip": "Image path for the master process or fallback for workers"
+                }),
+                "worker_images": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": "One image path per worker (one per line, in worker order)"
+                }),
+            },
+            "hidden": {
+                "is_worker": ("BOOLEAN", {"default": False}),
+                "worker_id": ("STRING", {"default": ""}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "select"
+    CATEGORY = "utils"
+
+    @staticmethod
+    def _parse_worker_index(worker_id: str) -> int:
+        if worker_id.startswith("worker_"):
+            return int(worker_id.split("_")[1])
+        return int(worker_id)
+
+    @staticmethod
+    def _normalize_worker_list(worker_images: str):
+        if not isinstance(worker_images, str):
+            return []
+        # Normalize newlines and strip empty entries
+        entries = worker_images.replace("\r", "\n").split("\n")
+        return [entry.strip() for entry in entries if entry.strip()]
+
+    def select(self, master_image, worker_images, is_worker=False, worker_id=""):
+        worker_list = self._normalize_worker_list(worker_images)
+        fallback_image = (master_image or "").strip()
+
+        if not fallback_image and worker_list:
+            fallback_image = worker_list[0]
+
+        if not is_worker:
+            debug_log(f"Image selector - Master: image='{fallback_image}'")
+            return (fallback_image,)
+
+        try:
+            worker_index = self._parse_worker_index(worker_id)
+            selected_image = worker_list[worker_index] if worker_index < len(worker_list) else fallback_image
+            debug_log(
+                f"Image selector - Worker {worker_index}: image='{selected_image}' (fallback='{fallback_image}')"
+            )
+            return (selected_image,)
+        except (ValueError, IndexError) as e:
+            debug_log(f"Image selector - Error parsing worker_id '{worker_id}': {e}")
+            return (fallback_image,)
+
 # Define ByPassTypeTuple for flexible return types
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
@@ -2262,13 +2327,15 @@ class ImageBatchDivider:
         return tuple(outputs)
 
 
-NODE_CLASS_MAPPINGS = { 
+NODE_CLASS_MAPPINGS = {
     "DistributedCollector": DistributedCollectorNode,
     "DistributedSeed": DistributedSeed,
+    "DistributedImageSelector": DistributedImageSelector,
     "ImageBatchDivider": ImageBatchDivider
 }
-NODE_DISPLAY_NAME_MAPPINGS = { 
+NODE_DISPLAY_NAME_MAPPINGS = {
     "DistributedCollector": "Distributed Collector",
     "DistributedSeed": "Distributed Seed",
+    "DistributedImageSelector": "Distributed Image Selector",
     "ImageBatchDivider": "Image Batch Divider"
 }
