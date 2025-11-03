@@ -246,7 +246,7 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
     if (distributorNodes.length > 0) {
         extension.log(`Found ${distributorNodes.length} seed node(s)`, "debug");
     }
-    
+
     for (const seedNode of distributorNodes) {
         const { inputs } = jobApiPrompt[seedNode.id];
         inputs.is_worker = !isMaster;
@@ -256,7 +256,22 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
             extension.log(`Set seed node ${seedNode.id} for worker ${workerIndex}`, "debug");
         }
     }
-    
+
+    const imageDistributorNodes = findNodesByClass(jobApiPrompt, "DistributedImageSelector");
+    if (imageDistributorNodes.length > 0) {
+        extension.log(`Found ${imageDistributorNodes.length} image selector node(s)`, "debug");
+    }
+
+    for (const imageNode of imageDistributorNodes) {
+        const { inputs } = jobApiPrompt[imageNode.id];
+        inputs.is_worker = !isMaster;
+        if (!isMaster) {
+            const workerIndex = options.enabled_worker_ids.indexOf(participantId);
+            inputs.worker_id = `worker_${workerIndex}`;
+            extension.log(`Set image selector ${imageNode.id} for worker ${workerIndex}`, "debug");
+        }
+    }
+
     // Handle Distributed collector nodes (already found above)
     for (const collector of collectorNodes) {
         const { inputs } = jobApiPrompt[collector.id];
