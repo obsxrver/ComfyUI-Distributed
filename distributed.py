@@ -4,6 +4,7 @@ from PIL import Image
 import folder_paths
 import os
 import json
+import random
 import asyncio
 import aiohttp
 from aiohttp import web
@@ -2188,6 +2189,150 @@ class DistributedSeed:
                 # Fallback: return original seed
                 return (seed,)
 
+class DistributedImagePrimitive:
+    """Offsets primitive-style values so each worker receives a distinct entry."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "batch_index": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 2 ** 31 - 1,
+                    "tooltip": "Base index that advances after each generation (e.g. from a Primitive node)",
+                }),
+                "mode": (["increment", "decrement", "random"], {
+                    "default": "increment",
+                    "tooltip": "How to order worker offsets within the batch",
+                }),
+                "step": ("INT", {
+                    "default": 1,
+                    "min": 1,
+                    "max": 1000,
+                    "tooltip": "Number of positions between each worker",
+                }),
+                "format_pattern": ("STRING", {
+                    "default": "{index}",
+                    "multiline": False,
+                    "tooltip": "Python-style format string. Use {index} where the computed value should go",
+                }),
+            },
+            "optional": {
+                "value_list": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": "Optional newline separated values to use instead of the formatted string",
+                }),
+                "wrap_values": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Wrap around when the computed index exceeds the provided values",
+                }),
+                "random_seed": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 2 ** 31 - 1,
+                    "tooltip": "Seed used to shuffle worker order when mode is random",
+                }),
+            },
+            "hidden": {
+                "is_worker": ("BOOLEAN", {"default": False}),
+                "worker_id": ("STRING", {"default": ""}),
+                "enabled_worker_ids": ("STRING", {"default": "[]"}),
+            },
+        }
+
+    RETURN_TYPES = ("INT", "STRING")
+    RETURN_NAMES = ("value", "text")
+    FUNCTION = "distribute"
+    CATEGORY = "utils"
+
+    @staticmethod
+    def _parse_worker_index(worker_id: str) -> int:
+        if not worker_id:
+            return 0
+        if worker_id.startswith("worker_"):
+            return int(worker_id.split("_")[1])
+        return int(worker_id)
+
+    @staticmethod
+    def _parse_worker_count(enabled_worker_ids: str) -> int:
+        try:
+            workers = json.loads(enabled_worker_ids) if enabled_worker_ids else []
+            if isinstance(workers, list):
+                return max(len(workers), 1)
+        except json.JSONDecodeError:
+            pass
+        return 1
+
+    @staticmethod
+    def _normalize_values(value_list: str):
+        if not isinstance(value_list, str):
+            return []
+        entries = value_list.replace("\r", "\n").split("\n")
+        return [entry.strip() for entry in entries if entry.strip()]
+
+    def distribute(
+        self,
+        batch_index,
+        mode,
+        step,
+        format_pattern,
+        value_list="",
+        wrap_values=True,
+        random_seed=0,
+        is_worker=False,
+        worker_id="",
+        enabled_worker_ids="[]",
+    ):
+        try:
+            worker_count = self._parse_worker_count(enabled_worker_ids)
+        except Exception:
+            worker_count = 1
+
+        try:
+            worker_index = self._parse_worker_index(worker_id) if is_worker else 0
+        except Exception:
+            worker_index = 0
+
+        base_index = max(int(batch_index), 0)
+        step = max(int(step), 1)
+
+        batch_stride = worker_count * step
+        base_offset = base_index * batch_stride
+
+        if mode == "decrement":
+            position = max(worker_count - 1 - worker_index, 0)
+        elif mode == "random":
+            order = list(range(worker_count))
+            rng = random.Random(int(random_seed) + base_index)
+            rng.shuffle(order)
+            position = order[worker_index % worker_count]
+        else:
+            position = max(worker_index, 0)
+
+        computed_value = base_offset + position * step
+
+        values = self._normalize_values(value_list)
+        if values:
+            if wrap_values and values:
+                mapped_index = computed_value % len(values)
+            else:
+                mapped_index = min(computed_value, len(values) - 1)
+            text_value = values[mapped_index]
+        else:
+            try:
+                text_value = format_pattern.format(index=computed_value)
+            except Exception:
+                text_value = str(computed_value)
+
+        debug_log(
+            f"Image primitive - {'Worker' if is_worker else 'Master'}: batch={base_index} "
+            f"worker={worker_index}/{worker_count} -> value={computed_value} text='{text_value}'"
+        )
+
+        return (computed_value, text_value)
+
 # Define ByPassTypeTuple for flexible return types
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
@@ -2262,13 +2407,15 @@ class ImageBatchDivider:
         return tuple(outputs)
 
 
-NODE_CLASS_MAPPINGS = { 
+NODE_CLASS_MAPPINGS = {
     "DistributedCollector": DistributedCollectorNode,
     "DistributedSeed": DistributedSeed,
+    "DistributedImagePrimitive": DistributedImagePrimitive,
     "ImageBatchDivider": ImageBatchDivider
 }
-NODE_DISPLAY_NAME_MAPPINGS = { 
+NODE_DISPLAY_NAME_MAPPINGS = {
     "DistributedCollector": "Distributed Collector",
     "DistributedSeed": "Distributed Seed",
+    "DistributedImagePrimitive": "Distributed Image Primitive",
     "ImageBatchDivider": "Image Batch Divider"
 }

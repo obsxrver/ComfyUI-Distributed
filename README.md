@@ -91,9 +91,12 @@ Generate multiple images in the time it takes to generate one. Each worker uses 
 
 1. Open your ComfyUI workflow
 2. Add **Distributed Seed** → connect to sampler's seed
-3. Add **Distributed Collector** → after VAE Decode
-4. Enable workers in the UI
-5. Run the workflow!
+3. (Optional) Add **Distributed Image Primitive** → connect its `text` output to *Load Image* `image` input for per-worker files
+4. Add **Distributed Collector** → after VAE Decode
+5. Enable workers in the UI
+6. Run the workflow!
+
+> Tip: feed the node with a Primitive/Number set to *increment after generate*. Each batch index is expanded for every enabled worker, so filenames like `image{index}.png` automatically advance per worker.
 
 ### Parallel WAN Generation
 Generate multiple videos in the time it takes to generate one. Each worker uses a different seed.
