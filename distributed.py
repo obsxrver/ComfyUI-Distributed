@@ -1544,6 +1544,45 @@ if not hasattr(prompt_server, 'distributed_pending_jobs'):
     prompt_server.distributed_pending_jobs = {}
     prompt_server.distributed_jobs_lock = asyncio.Lock()
 
+from .distributed_queue_api import orchestrate_distributed_execution
+
+@server.PromptServer.instance.routes.post("/distributed/queue")
+async def distributed_queue_endpoint(request):
+    """Queue a distributed workflow, mirroring the UI orchestration pipeline."""
+    try:
+        data = await request.json()
+    except Exception as exc:
+        return await handle_api_error(request, f"Invalid JSON payload: {exc}", 400)
+
+    prompt = data.get("prompt")
+    if not isinstance(prompt, dict):
+        return await handle_api_error(request, "Field 'prompt' must be an object", 400)
+
+    workflow_meta = data.get("workflow")
+    client_id = data.get("client_id")
+    delegate_master = data.get("delegate_master")
+    enabled_ids = data.get("enabled_worker_ids")
+
+    if enabled_ids is not None:
+        if not isinstance(enabled_ids, list):
+            return await handle_api_error(request, "enabled_worker_ids must be a list of worker IDs", 400)
+        enabled_ids = [str(worker_id) for worker_id in enabled_ids]
+
+    try:
+        prompt_id, worker_count = await orchestrate_distributed_execution(
+            prompt,
+            workflow_meta,
+            client_id,
+            enabled_worker_ids=enabled_ids,
+            delegate_master=delegate_master,
+        )
+        return web.json_response({
+            "prompt_id": prompt_id,
+            "worker_count": worker_count,
+        })
+    except Exception as exc:
+        return await handle_api_error(request, exc, 500)
+
 @server.PromptServer.instance.routes.post("/distributed/load_image")
 async def load_image_endpoint(request):
     """Load an image or video file and return it as base64 data with hash."""
