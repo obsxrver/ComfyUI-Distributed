@@ -72,6 +72,24 @@ Queue a workflow for distributed execution.
   - If provided, only these worker IDs will be considered.
   - If omitted, the plugin uses workers marked as enabled in the UI config.
 
+##### How to get `enabled_worker_ids`
+
+Worker IDs come from the plugin config (`GET /distributed/config`) under `workers[].id`.
+
+Example (bash + `jq`):
+
+```bash
+curl -s "http://127.0.0.1:8188/distributed/config" \
+  | jq -r '.workers[] | "id=\(.id)\tname=\(.name)\tenabled=\(.enabled)\thost=\(.host)\tport=\(.port)\ttype=\(.type)"'
+```
+
+Example (PowerShell):
+
+```powershell
+$cfg = Invoke-RestMethod "http://127.0.0.1:8188/distributed/config"
+$cfg.workers | Select-Object id,name,enabled,host,port,type | Format-Table -AutoSize
+```
+
 ### Response Body
 
 ```json
