@@ -6,11 +6,11 @@ This document describes the **public HTTP API** added to ComfyUI-Distributed to 
 
 ## Demo
 
-- Video walkthrough (placeholder): **TBD**
+- Video walkthrough: https://youtu.be/yiQlPd0MzLk
 
 ## Examples Repository
 
-- Examples repo (placeholder): **TBD**
+- Examples repo: https://github.com/umanets/ComfyUI-Distributed-API-examples.git
 
 ---
 
