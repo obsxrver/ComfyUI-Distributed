@@ -1,0 +1,203 @@
+# ComfyUI-Distributed API (Experimental)
+
+This document describes the **public HTTP API** added to ComfyUI-Distributed to allow queueing *distributed* workflows from external tools (scripts, services, CI jobs, render farms, etc.) without using the ComfyUI web UI.
+
+> Status: **works in field testing**, but treat as **API-stability not guaranteed** until merged upstream.
+
+## Demo
+
+- Video walkthrough: https://youtu.be/yiQlPd0MzLk
+
+## Examples Repository
+
+- Examples repo: https://github.com/umanets/ComfyUI-Distributed-API-examples.git
+
+---
+
+## Overview
+
+### What this adds
+
+- `POST /distributed/queue` — queues a workflow using the same distributed orchestration rules as the UI:
+  - Detects distributed nodes in the prompt (`DistributedCollector`, `UltimateSDUpscaleDistributed`).
+  - Resolves enabled/selected workers.
+  - Pings workers (`GET /prompt`) to include only reachable ones.
+  - Dispatches the workflow to workers (`POST /prompt`).
+  - Queues the master workflow in ComfyUI’s prompt queue.
+
+### What it does *not* add
+
+- Authentication/authorization.
+- A separate “job status” API for distributed results (you still use ComfyUI’s normal prompt history / websocket flow, and the existing `/distributed/queue_status/{job_id}` behavior for collector queues).
+
+---
+
+## Endpoint: `POST /distributed/queue`
+
+Queue a workflow for distributed execution.
+
+### URL
+
+- `http://<master-host>:<master-port>/distributed/queue`
+
+### Headers
+
+- `Content-Type: application/json`
+
+### Request Body
+
+```json
+{
+  "prompt": { "<node_id>": { "class_type": "...", "inputs": { } } },
+  "workflow": { },
+  "client_id": "optional",
+  "delegate_master": false,
+  "enabled_worker_ids": ["1", "2"]
+}
+```
+
+#### Fields
+
+- `prompt` (required, object)
+  - The ComfyUI prompt/workflow graph, same shape as used by `POST /prompt`.
+- `workflow` (optional, object)
+  - Workflow metadata that ComfyUI normally stores in `extra_pnginfo.workflow`.
+  - If you don’t care about UI metadata, you can omit it.
+- `client_id` (optional, string)
+  - Passed through as `extra_data.client_id` (useful if you consume ComfyUI websocket events).
+- `delegate_master` (optional, boolean)
+  - If `true`, attempts “workers-only” execution for workflows based on `DistributedCollector`.
+  - Current limitation: delegate-only mode **does not support** `UltimateSDUpscaleDistributed` and will fall back to running the full prompt on master.
+- `enabled_worker_ids` (optional, array of strings)
+  - If provided, only these worker IDs will be considered.
+  - If omitted, the plugin uses workers marked as enabled in the UI config.
+
+##### How to get `enabled_worker_ids`
+
+Worker IDs come from the plugin config (`GET /distributed/config`) under `workers[].id`.
+
+Example (bash + `jq`):
+
+```bash
+curl -s "http://127.0.0.1:8188/distributed/config" \
+  | jq -r '.workers[] | "id=\(.id)\tname=\(.name)\tenabled=\(.enabled)\thost=\(.host)\tport=\(.port)\ttype=\(.type)"'
+```
+
+Example (PowerShell):
+
+```powershell
+$cfg = Invoke-RestMethod "http://127.0.0.1:8188/distributed/config"
+$cfg.workers | Select-Object id,name,enabled,host,port,type | Format-Table -AutoSize
+```
+
+### Response Body
+
+```json
+{
+  "prompt_id": "<uuid>",
+  "worker_count": 2
+}
+```
+
+- `prompt_id` — the master prompt id queued into ComfyUI.
+- `worker_count` — number of workers that received a dispatched prompt (only those that passed the health check).
+
+### Status Codes
+
+- `200` — queued.
+- `400` — invalid JSON or invalid body.
+- `500` — orchestration/dispatch failure (see server logs for details).
+
+---
+
+## Worker requirements (important)
+
+For a worker to participate, it must be reachable from the master:
+
+- Health check: `GET <worker-base>/prompt` must return HTTP 200.
+- Dispatch: `POST <worker-base>/prompt` must accept the workflow.
+
+Also, for collector-based flows:
+
+- Workers will send results back to the master via `POST /distributed/job_complete` (that route must be reachable from workers).
+
+### CORS note
+
+If you call the API from a browser (not from a backend), ensure the master ComfyUI is started with `--enable-cors-header`.
+
+---
+
+## Examples
+
+### 1) Minimal `curl`
+
+```bash
+curl -X POST "http://127.0.0.1:8188/distributed/queue" \
+  -H "Content-Type: application/json" \
+  -d @payload.json
+```
+
+Where `payload.json` contains at least:
+
+```json
+{
+  "prompt": {
+    "1": {"class_type": "KSampler", "inputs": {} }
+  }
+}
+```
+
+### 2) Python (`requests`)
+
+```python
+import requests
+
+url = "http://127.0.0.1:8188/distributed/queue"
+payload = {
+    "prompt": {...},
+    "workflow": {...},
+    "delegate_master": False,
+    "enabled_worker_ids": ["1", "2"],
+}
+
+r = requests.post(url, json=payload, timeout=60)
+r.raise_for_status()
+print(r.json())
+```
+
+### 3) JavaScript (`fetch`)
+
+```js
+const url = "http://127.0.0.1:8188/distributed/queue";
+
+const payload = {
+  prompt: {/* ... */},
+  workflow: {/* ... */},
+  delegate_master: false,
+  enabled_worker_ids: ["1", "2"],
+};
+
+const resp = await fetch(url, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(payload),
+});
+
+if (!resp.ok) throw new Error(await resp.text());
+console.log(await resp.json());
+```
+
+---
+
+## Operational notes / gotchas
+
+- If the workflow contains **no distributed nodes**, the endpoint falls back to normal master queueing and returns `worker_count: 0`.
+- Worker selection is “best-effort”: offline workers are skipped.
+- For public URLs/tunnels: prefer configuring `master.host` with an explicit scheme (`https://...`) to avoid ambiguity.
+
+---
+
+## Changelog (this feature)
+
+- Added `POST /distributed/queue` endpoint.
+- Added orchestration module used by the endpoint.
