@@ -2,8 +2,6 @@
 
 This document describes the **public HTTP API** added to ComfyUI-Distributed to allow queueing *distributed* workflows from external tools (scripts, services, CI jobs, render farms, etc.) without using the ComfyUI web UI.
 
-> Status: **works in field testing**, but treat as **API-stability not guaranteed** until merged upstream.
-
 ## Demo
 
 - Video walkthrough: https://youtu.be/yiQlPd0MzLk
