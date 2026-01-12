@@ -63,6 +63,24 @@ def sync_wrapper(async_func):
 
 # Note: tensor_to_pil and pil_to_tensor are imported from utils.image
 
+
+def _parse_enabled_worker_ids(enabled_worker_ids):
+    """Parse enabled worker IDs from either JSON or list input."""
+    if isinstance(enabled_worker_ids, list):
+        return [str(worker_id) for worker_id in enabled_worker_ids]
+    if not enabled_worker_ids:
+        return []
+    if isinstance(enabled_worker_ids, str):
+        try:
+            parsed = json.loads(enabled_worker_ids)
+        except json.JSONDecodeError:
+            log("USDU Dist: Invalid enabled_worker_ids JSON; defaulting to no workers.")
+            return []
+        if isinstance(parsed, list):
+            return [str(worker_id) for worker_id in parsed]
+    log("USDU Dist: Unsupported enabled_worker_ids format; defaulting to no workers.")
+    return []
+
 class UltimateSDUpscaleDistributed:
     """
     Distributed version of Ultimate SD Upscale (No Upscale).
@@ -186,7 +204,7 @@ class UltimateSDUpscaleDistributed:
         
         # Ensure mode consistency across master/workers via shared threshold
         # Determine mode (must match master's logic)
-        enabled_workers = json.loads(enabled_worker_ids)
+        enabled_workers = _parse_enabled_worker_ids(enabled_worker_ids)
         num_workers = len(enabled_workers)
         # Compute number of tiles for this image to decide if tile distribution makes sense
         _, height, width, _ = upscaled_image.shape
@@ -199,7 +217,9 @@ class UltimateSDUpscaleDistributed:
         if num_workers > 0 and num_tiles_per_image > 1:
             mode = "static"
             
-        debug_log(f"USDU Dist Worker - Batch size {batch_size}")
+        debug_log(
+            f"USDU Dist Worker - Batch size {batch_size} | Workers {num_workers} | Mode {mode} | Threshold {dynamic_threshold}"
+        )
         
         if mode == "dynamic":
             return self.process_worker_dynamic(upscaled_image, model, positive, negative, vae,
@@ -238,7 +258,7 @@ class UltimateSDUpscaleDistributed:
         )
         
         # Parse enabled workers
-        enabled_workers = json.loads(enabled_worker_ids)
+        enabled_workers = _parse_enabled_worker_ids(enabled_worker_ids)
         num_workers = len(enabled_workers)
         
         # Determine processing mode
@@ -248,7 +268,7 @@ class UltimateSDUpscaleDistributed:
         if num_workers > 0 and num_tiles_per_image > 1:
             mode = "static"
         
-        log(f"USDU Dist: Workers {num_workers}")
+        log(f"USDU Dist: Workers {num_workers} | Mode {mode} | Threshold {dynamic_threshold}")
         
         if mode == "single_gpu":
             # No workers, process all tiles locally
