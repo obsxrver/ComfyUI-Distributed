@@ -496,22 +496,100 @@ async function dispatchToWorker(extension, worker, prompt, workflow, imageRefere
     
     const promptToSend = {
         prompt,
-        extra_data: { extra_pnginfo: { workflow } },
+        workflow,
         client_id: api.clientId
     };
     
     extension.log('[Distributed] Prompt data: ' + JSON.stringify(promptToSend), "debug");
     
     try {
-        await fetch(`${workerUrl}/prompt`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
+        if (extension.config?.settings?.websocket_orchestration) {
+            const wsUrl = buildWorkerWebSocketUrl(workerUrl);
+            await dispatchPromptViaWebSocket(extension, wsUrl, promptToSend);
+            return;
+        }
+        await fetch(`${workerUrl}/prompt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             mode: 'cors',
-            body: JSON.stringify(promptToSend) 
+            body: JSON.stringify({
+                prompt,
+                extra_data: { extra_pnginfo: { workflow } },
+                client_id: api.clientId
+            })
         });
     } catch (e) {
         extension.log(`Failed to connect to worker ${worker.name} at ${workerUrl}: ${e.message}`, "error");
     }
+}
+
+function buildWorkerWebSocketUrl(workerUrl) {
+    const url = new URL(workerUrl);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.pathname = '/distributed/worker_ws';
+    url.search = '';
+    return url.toString();
+}
+
+function generateRequestId() {
+    if (crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+async function dispatchPromptViaWebSocket(extension, wsUrl, payload) {
+    const requestId = generateRequestId();
+    const message = {
+        type: 'dispatch_prompt',
+        request_id: requestId,
+        prompt: payload.prompt,
+        workflow: payload.workflow,
+        client_id: payload.client_id
+    };
+
+    await new Promise((resolve, reject) => {
+        const ws = new WebSocket(wsUrl);
+        const timeoutId = setTimeout(() => {
+            ws.close();
+            reject(new Error('Websocket dispatch timed out.'));
+        }, 60000);
+
+        ws.addEventListener('open', () => {
+            ws.send(JSON.stringify(message));
+        });
+
+        ws.addEventListener('message', (event) => {
+            try {
+                const data = JSON.parse(event.data || '{}');
+                if (data.type !== 'dispatch_ack' || data.request_id !== requestId) {
+                    return;
+                }
+                clearTimeout(timeoutId);
+                ws.close();
+                if (data.ok) {
+                    resolve();
+                } else {
+                    reject(new Error(data.error || 'Worker rejected websocket dispatch.'));
+                }
+            } catch (error) {
+                clearTimeout(timeoutId);
+                ws.close();
+                reject(error);
+            }
+        });
+
+        ws.addEventListener('error', () => {
+            clearTimeout(timeoutId);
+            ws.close();
+            reject(new Error('Websocket connection failed.'));
+        });
+    });
+    extension.log(`[Distributed] Websocket dispatch succeeded for ${wsUrl}`, "debug");
 }
 
 export async function loadImagesForWorker(extension, imageReferences) {

@@ -22,6 +22,8 @@ def ensure_distributed_state():
         prompt_server.distributed_pending_jobs = {}
     if not hasattr(prompt_server, "distributed_jobs_lock"):
         prompt_server.distributed_jobs_lock = asyncio.Lock()
+    if not hasattr(prompt_server, "distributed_worker_ws"):
+        prompt_server.distributed_worker_ws = {}
 
 
 async def _get_client_session():
@@ -311,7 +313,40 @@ async def _worker_is_active(worker):
         return False
 
 
-async def _dispatch_worker_prompt(worker, prompt_obj, workflow_meta):
+async def _worker_ws_is_active(worker):
+    """Ping worker's websocket endpoint to confirm it's reachable."""
+    session = await _get_client_session()
+    url = _build_worker_url(worker, "/distributed/worker_ws")
+    try:
+        ws = await session.ws_connect(url, heartbeat=20, timeout=3)
+        await ws.close()
+        return True
+    except Exception:
+        return False
+
+
+async def _get_worker_ws_connection(worker):
+    """Return a cached websocket connection to a worker (creating if needed)."""
+    ensure_distributed_state()
+    worker_id = worker.get("id")
+    existing = prompt_server.distributed_worker_ws.get(worker_id)
+    if existing and not existing.closed:
+        return existing
+
+    session = await _get_client_session()
+    url = _build_worker_url(worker, "/distributed/worker_ws")
+    ws = await session.ws_connect(url, heartbeat=20, timeout=10)
+    prompt_server.distributed_worker_ws[worker_id] = ws
+    return ws
+
+
+async def _close_worker_ws(worker_id):
+    ws = prompt_server.distributed_worker_ws.pop(worker_id, None)
+    if ws and not ws.closed:
+        await ws.close()
+
+
+async def _dispatch_worker_prompt(worker, prompt_obj, workflow_meta, client_id, use_websocket=False):
     """Send the prepared prompt to a worker ComfyUI instance."""
     url = _build_worker_url(worker, "/prompt")
     payload = {"prompt": prompt_obj}
@@ -320,6 +355,35 @@ async def _dispatch_worker_prompt(worker, prompt_obj, workflow_meta):
         extra_data.setdefault("extra_pnginfo", {})["workflow"] = workflow_meta
     if extra_data:
         payload["extra_data"] = extra_data
+
+    if use_websocket:
+        request_id = uuid.uuid4().hex
+        ws_payload = {
+            "type": "dispatch_prompt",
+            "request_id": request_id,
+            "prompt": prompt_obj,
+            "workflow": workflow_meta,
+            "client_id": client_id,
+        }
+        try:
+            ws = await _get_worker_ws_connection(worker)
+            await ws.send_json(ws_payload)
+            response = await asyncio.wait_for(ws.receive(), timeout=60)
+            if response.type == aiohttp.WSMsgType.TEXT:
+                data = json.loads(response.data or "{}")
+                if (
+                    data.get("type") == "dispatch_ack"
+                    and data.get("request_id") == request_id
+                    and data.get("ok")
+                ):
+                    return
+                error_msg = data.get("error") or "Worker rejected websocket dispatch."
+                raise RuntimeError(error_msg)
+            raise RuntimeError("Unexpected websocket response from worker.")
+        except Exception as exc:
+            worker_id = worker.get("id")
+            await _close_worker_ws(worker_id)
+            log(f"[Distributed] Websocket dispatch failed for worker {worker_id}: {exc}")
 
     session = await _get_client_session()
     async with session.post(
@@ -442,6 +506,7 @@ async def orchestrate_distributed_execution(
     ensure_distributed_state()
 
     config = load_config()
+    use_websocket = bool(config.get("settings", {}).get("websocket_orchestration", False))
     requested_ids = enabled_worker_ids if enabled_worker_ids is not None else None
     workers = _resolve_enabled_workers(config, requested_ids)
     prompt_index = PromptIndex(prompt_obj)
@@ -457,7 +522,11 @@ async def orchestrate_distributed_execution(
     # Filter to active workers
     active_workers = []
     for worker in workers:
-        if await _worker_is_active(worker):
+        if use_websocket:
+            is_active = await _worker_ws_is_active(worker)
+        else:
+            is_active = await _worker_is_active(worker)
+        if is_active:
             active_workers.append(worker)
         else:
             log(f"[Distributed] Worker {worker['name']} ({worker['id']}) is offline, skipping.")
@@ -525,7 +594,10 @@ async def orchestrate_distributed_execution(
 
     if worker_payloads:
         await asyncio.gather(
-            *[_dispatch_worker_prompt(worker, wprompt, workflow_meta) for worker, wprompt in worker_payloads]
+            *[
+                _dispatch_worker_prompt(worker, wprompt, workflow_meta, client_id, use_websocket=use_websocket)
+                for worker, wprompt in worker_payloads
+            ]
         )
 
     prompt_id = await _queue_master_prompt(master_prompt, workflow_meta, client_id)
