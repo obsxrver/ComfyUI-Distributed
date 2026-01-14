@@ -666,6 +666,7 @@ export async function performPreflightCheck(extension, workers) {
             const response = await fetch(url, {
                 method: 'GET',
                 mode: 'cors',
+                cache: 'no-store',
                 signal: AbortSignal.timeout(TIMEOUTS.STATUS_CHECK)
             });
             
@@ -677,6 +678,10 @@ export async function performPreflightCheck(extension, workers) {
                 return { worker, active: false };
             }
         } catch (error) {
+            if (error?.name === 'AbortError') {
+                extension.log(`Worker ${worker.name} pre-flight check timed out; assuming active`, "debug");
+                return { worker, active: true, uncertain: true };
+            }
             extension.log(`Worker ${worker.name} is offline or unreachable: ${error.message}`, "debug");
             return { worker, active: false };
         }
