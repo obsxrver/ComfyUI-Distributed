@@ -9,6 +9,7 @@ import aiohttp
 from aiohttp import web
 import io
 import server
+import execution
 import comfy.model_management
 import subprocess
 import platform
@@ -82,6 +83,96 @@ async def queue_status_endpoint(request):
         return web.json_response({"exists": exists, "job_id": job_id})
     except Exception as e:
         return await handle_api_error(request, e, 500)
+
+
+async def _queue_prompt_payload(prompt_obj, workflow_meta=None, client_id=None):
+    payload = {"prompt": prompt_obj}
+    payload = prompt_server.trigger_on_prompt(payload)
+    prompt = payload["prompt"]
+
+    prompt_id = str(uuid.uuid4())
+    valid = await execution.validate_prompt(prompt_id, prompt, None)
+    if not valid[0]:
+        raise RuntimeError(f"Invalid prompt: {valid[1]}")
+
+    extra_data = {}
+    if workflow_meta:
+        extra_data.setdefault("extra_pnginfo", {})["workflow"] = workflow_meta
+    if client_id:
+        extra_data["client_id"] = client_id
+
+    sensitive = {}
+    for key in getattr(execution, "SENSITIVE_EXTRA_DATA_KEYS", []):
+        if key in extra_data:
+            sensitive[key] = extra_data.pop(key)
+
+    number = getattr(prompt_server, "number", 0)
+    prompt_server.number = number + 1
+    prompt_queue_item = (number, prompt_id, prompt, extra_data, valid[2], sensitive)
+    prompt_server.prompt_queue.put(prompt_queue_item)
+    return prompt_id
+
+
+@server.PromptServer.instance.routes.get("/distributed/worker_ws")
+async def worker_ws_endpoint(request):
+    ws = web.WebSocketResponse(heartbeat=30)
+    await ws.prepare(request)
+
+    async for msg in ws:
+        if msg.type == aiohttp.WSMsgType.TEXT:
+            try:
+                data = json.loads(msg.data or "{}")
+            except json.JSONDecodeError:
+                await ws.send_json({
+                    "type": "dispatch_ack",
+                    "request_id": None,
+                    "ok": False,
+                    "error": "Invalid JSON payload.",
+                })
+                continue
+
+            if data.get("type") != "dispatch_prompt":
+                await ws.send_json({
+                    "type": "dispatch_ack",
+                    "request_id": data.get("request_id"),
+                    "ok": False,
+                    "error": "Unsupported websocket message type.",
+                })
+                continue
+
+            prompt = data.get("prompt")
+            if not isinstance(prompt, dict):
+                await ws.send_json({
+                    "type": "dispatch_ack",
+                    "request_id": data.get("request_id"),
+                    "ok": False,
+                    "error": "Field 'prompt' must be an object.",
+                })
+                continue
+
+            try:
+                prompt_id = await _queue_prompt_payload(
+                    prompt,
+                    workflow_meta=data.get("workflow"),
+                    client_id=data.get("client_id"),
+                )
+                await ws.send_json({
+                    "type": "dispatch_ack",
+                    "request_id": data.get("request_id"),
+                    "ok": True,
+                    "prompt_id": prompt_id,
+                })
+            except Exception as exc:
+                await ws.send_json({
+                    "type": "dispatch_ack",
+                    "request_id": data.get("request_id"),
+                    "ok": False,
+                    "error": str(exc),
+                })
+        elif msg.type == aiohttp.WSMsgType.ERROR:
+            log(f"[Distributed] Worker websocket error: {ws.exception()}")
+
+    return ws
 
 @server.PromptServer.instance.routes.post("/distributed/worker/clear_launching")
 async def clear_launching_state(request):

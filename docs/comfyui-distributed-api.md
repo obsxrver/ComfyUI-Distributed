@@ -19,8 +19,8 @@ This document describes the **public HTTP API** added to ComfyUI-Distributed to 
 - `POST /distributed/queue` — queues a workflow using the same distributed orchestration rules as the UI:
   - Detects distributed nodes in the prompt (`DistributedCollector`, `UltimateSDUpscaleDistributed`).
   - Resolves enabled/selected workers.
-  - Pings workers (`GET /prompt`) to include only reachable ones.
-  - Dispatches the workflow to workers (`POST /prompt`).
+  - Pings workers (HTTP `GET /prompt` or websocket `/distributed/worker_ws`) to include only reachable ones.
+  - Dispatches the workflow to workers (`POST /prompt` or websocket `/distributed/worker_ws`).
   - Queues the master workflow in ComfyUI’s prompt queue.
 
 ### What it does *not* add
@@ -112,8 +112,8 @@ $cfg.workers | Select-Object id,name,enabled,host,port,type | Format-Table -Auto
 
 For a worker to participate, it must be reachable from the master:
 
-- Health check: `GET <worker-base>/prompt` must return HTTP 200.
-- Dispatch: `POST <worker-base>/prompt` must accept the workflow.
+- Health check: `GET <worker-base>/prompt` must return HTTP 200 (or websocket connect to `<worker-base>/distributed/worker_ws` if websocket orchestration is enabled).
+- Dispatch: `POST <worker-base>/prompt` must accept the workflow (or websocket dispatch to `<worker-base>/distributed/worker_ws` if websocket orchestration is enabled).
 
 Also, for collector-based flows:
 
@@ -122,6 +122,10 @@ Also, for collector-based flows:
 ### CORS note
 
 If you call the API from a browser (not from a backend), ensure the master ComfyUI is started with `--enable-cors-header`.
+
+### Websocket orchestration (optional)
+
+Set `settings.websocket_orchestration: true` in `gpu_config.json` on the **master** to have the orchestrator prefer websockets for health checks and dispatch. The master will send `dispatch_prompt` messages over `/distributed/worker_ws` and fall back to HTTP if a websocket connection fails.
 
 ---
 
